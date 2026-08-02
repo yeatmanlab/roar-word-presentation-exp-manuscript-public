@@ -1,0 +1,721 @@
+---
+title: "ROAR-presentation-experiment-analysis-study2"
+author: "Wanjing Anya Ma"
+date:  "`r Sys.Date()`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Load Packages
+
+Let's first load the packages that we need for this chapter.
+
+```{r, message=FALSE, warning = FALSE, echo = FALSE}
+library("knitr") # for rendering the RMarkdown file
+library("tidyverse") # for data wrangling 
+library(dplyr)
+library(mirt)
+library('ggpubr')
+library(Metrics)
+library(hash)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(rstudioapi)
+library(viridis)
+library(TAM)
+library(mgcv)
+library(viridis)
+library(patchwork)
+library(reshape2)
+library(catR)
+library("janitor")     # for cleaning column names
+library("broom.mixed") # for tidying up linear models 
+library("emmeans")     # for the joint_tests() function 
+library("lme4")        # for linear mixed effects models
+library("performance") # for assessing model performance
+library("see")         # for assessing model performance
+library(boot)
+```
+
+## Settings
+
+```{r echo = FALSE}
+# sets how code looks in knitted document
+opts_chunk$set(comment = "")
+
+# suppresses warning about grouping 
+options(dplyr.summarise.inform = F)
+```
+
+```{r}
+timeConvert <- c(
+  "80" ="T1",
+  "160"= "T2",
+  "350"="T3",
+  "700"= "T4",
+  "infinite"= "T5"
+)
+```
+
+# load corpus
+
+```{r}
+df.new.items.easy <-  read_csv("~/Documents/code/ROAR_organizer/roar-cat/corpus/new_items_easy/new_items_easy_final_200.csv")
+
+df.current_item_bank <-  read_csv("~/Documents/code/ROAR_organizer/roar-cat/corpus/item_bank_v5.csv")
+```
+
+# Load data
+```{r}
+data_path <- "/Users/wanjing/Library/CloudStorage/GoogleDrive-wanjingm@stanford.edu/Shared\ drives/ROAR-presentation-exp-data/"
+
+df.swr.easyblock.trials <- read_csv(paste0(data_path,"task_swr_QD6QHTccdmpg3DrpMu3w_2025_08_17.csv"))
+```
+
+
+```{r}
+opt_out_data = read_csv(file = here::here('data/opt_outs_2026-01-12.csv')) 
+```
+
+```{r}
+df.swr.easyblock.trials.clean <- df.swr.easyblock.trials %>% 
+  filter(!assessment_pid %in% opt_out_data$assessment_pid)
+```
+
+
+```{r}
+df.test.data <- df.swr.easyblock.trials.clean %>% 
+  group_by(assessment_pid, is_test_data,  run_id) %>% 
+  tally() %>% 
+  group_by(assessment_pid, is_test_data) %>% 
+  tally() %>% 
+  filter(is_test_data == TRUE )
+```
+
+```{r}
+df.swr.easyblock.trials.unique <- df.swr.easyblock.trials.clean %>% 
+  filter(!assessment_pid %in% df.test.data$assessment_pid) %>% 
+  select(-c(document_name, document_name_1, timestamp_1, timestamp))%>% 
+  unique()
+
+```
+```{r}
+#write.csv(df.swr.easyblock.trials.unique, "data/swr_with_94_trials.csv")
+```
+
+we have 18346 unique runs. 
+we have 14393 unique participants. 
+
+```{r}
+df.swr.easyblock.scores <- df.swr.easyblock.trials.unique %>% 
+  filter(trial_num_total == 94) %>% 
+  select(run_id, theta_estimate, theta_std_err) %>% 
+  rename(theta_estimate_final = theta_estimate, theta_se_final = theta_std_err)
+```
+
+```{r}
+df.trials.v2 <- df.swr.easyblock.trials.unique %>% 
+  filter(completed == "TRUE", assessment_stage == "test_response") %>%
+  mutate(correct = as.numeric(correct), block = as.numeric(block)) %>% 
+  left_join(df.swr.easyblock.scores)
+```
+
+# Examine data 
+## remove guessing participants
+```{r}
+df.guessing.participants <- df.trials.v2 %>% 
+  filter(block != 0) %>% 
+  group_by(run_id) %>% 
+  dplyr :: summarise(acc = mean(correct), medianRT = median(rt)) %>% 
+  filter(acc < 0.65, medianRT < 450)
+```
+
+```{r}
+length(df.guessing.participants$run_id)
+```
+
+## Count new items
+```{r}
+df.new.words.count <- df.trials.v2 %>% 
+  filter(corpus_id == "en-corpusNew-easy") %>% 
+  group_by(word) %>% 
+  tally()
+
+ggplot(df.new.words.count , aes(x = n)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "lightblue") +
+  labs(title = "New Slow Presentation Time Items (200)",
+       x = "Count of items",
+       y = "Number of responses") +
+  theme_minimal()
+```
+
+```{r}
+df.student.summary <- df.trials.v2 %>% 
+  filter(!run_id %in% df.guessing.participants$run_id) %>% 
+  filter(trial_num_total == 94) %>% 
+  mutate(thta_estimate = theta_estimate) %>% 
+    dplyr :: select(run_id, theta_estimate) 
+
+ggplot(df.student.summary , aes(x = theta_estimate)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "lightblue") +
+  labs(title = "Ability distribution for calibration",
+       x = "Theta estimate",
+       y = "Number of runs") +
+  theme_minimal()
+```
+
+# calibrate new items
+
+### resp of new items
+
+```{r}
+df.resp <- df.trials.v2 %>% 
+  filter(rt > 200, rt < 5000, reliable == TRUE) %>% 
+  filter(corpus_id == "en-corpusNew-easy") %>% 
+  dplyr :: select(run_id, word, correct, theta_estimate_final) %>% 
+  filter(!is.na(theta_estimate_final)) %>% 
+  arrange(word) %>% 
+  dplyr :: select(run_id, word, correct, theta_estimate_final) %>% 
+  pivot_wider(names_from = word, values_from = correct) %>% 
+  rename(theta_estimate = theta_estimate_final) %>% 
+  relocate(run_id, theta_estimate) 
+
+df.resp.low.performers <- df.trials.v2 %>% 
+  filter(rt > 200, rt < 5000, reliable == TRUE) %>% 
+  filter(corpus_id == "en-corpusNew-easy") %>% 
+  #filter(grade %in% c("1", "2", "3", "4", "5", "K", "Kindergarten")) %>% 
+  dplyr :: select(run_id, word, correct, theta_estimate_final) %>% 
+  filter(!is.na(theta_estimate_final)) %>% 
+  arrange(word) %>% 
+  dplyr :: select(run_id, word, correct, theta_estimate_final) %>% 
+  pivot_wider(names_from = word, values_from = correct) %>% 
+  rename(theta_estimate = theta_estimate_final) %>% 
+  relocate(run_id, theta_estimate) 
+
+df.resp.low.performers.2 <- df.trials.v2 %>% 
+  filter(rt > 200, rt < 5000, reliable == TRUE) %>% 
+  filter(corpus_id == "en-corpusNew-easy") %>% 
+  #filter(grade %in% c("1", "2", "3", "4", "5", "K", "Kindergarten")) %>% 
+  dplyr :: select(run_id, word, correct, theta_estimate_final) %>% 
+  filter(!is.na(theta_estimate_final)) %>% 
+  arrange(word) %>% 
+  dplyr :: select(run_id, word, correct, theta_estimate_final) %>% 
+  pivot_wider(names_from = word, values_from = correct) %>% 
+  rename(theta_estimate = theta_estimate_final) %>% 
+  relocate(run_id, theta_estimate) %>% 
+  filter(theta_estimate < 1)
+```
+
+```{r}
+df.trials.v2 %>% 
+  mutate(valid = ifelse(rt < 200 | rt > 5000, 0, 1)) %>% 
+  group_by(valid) %>% 
+  tally()
+```
+
+
+```{r}
+likelihood<-function(b,resp,th) {
+  k<-th-b
+  p<-0.5 + 0.5*(exp(k)/(1+exp(k)))
+  p^resp*(1-p)^(1-resp)
+}
+```
+
+```{r}
+func.calibration <- function(df){
+
+  resp<-as.numeric(df[,3])
+
+  th<-as.numeric(df[,2])
+
+  f<-function(b,resp,th) {
+    z<-likelihood(b,resp=resp,th=th)
+    loglik<-sum(log(z))
+    -loglik
+    }
+
+  #result <- optim(2,f,resp=resp,th=th)
+  result <- optim(par = 0,             # initial guess
+  fn = f,    # your objective function
+  resp=resp,th=th,
+  method = "Brent",
+  lower = -6, # Brent needs finite bounds!
+  upper = 6)
+
+  return (result$par)
+
+}
+
+```
+
+```{r}
+df.newwords <- df.new.items.easy
+```
+
+```{r}
+list.difficulty <- NULL
+for (word in df.newwords$word) {
+  df <- as.matrix(df.resp.low.performers %>% 
+  dplyr :: select(run_id, theta_estimate, word) %>% 
+  drop_na())
+  
+  list.difficulty <- c(list.difficulty, func.calibration(df))
+}
+
+df.new.word.calibration.low.performers <- tibble(word = df.newwords$word, difficulty = list.difficulty) %>% 
+  left_join(df.newwords)
+```
+
+### new item difficulty
+```{r}
+df.item.bank.updated <-df.new.word.calibration.low.performers %>% 
+  mutate(b = difficulty) %>% 
+  dplyr :: select(-c(difficulty)) %>% 
+  rbind(df.current_item_bank) %>% 
+  mutate(corpusId = ifelse(corpusId == "en-corpusNew-easy", corpusId, "validated")) 
+
+df.item.bank.updated.plot <-df.item.bank.updated %>% 
+  mutate(
+    corpusId = ifelse(corpusId == "en-corpusNew-easy", "New items", "Validated items"),
+    realpseudo = ifelse(realpseudo == "real", "Real", "Pseudo")
+  ) %>% 
+  mutate(
+    `Item type` = factor(realpseudo, levels = c("Real", "Pseudo")),
+    corpusId  = factor(corpusId, levels = c("Validated items", "New items"))
+  )
+```
+
+```{r}
+g.item.bank.enhancement <- ggplot(df.item.bank.updated.plot , aes(x=b, color = `Item type`)) + geom_histogram(binwidth = 0.25) + facet_grid(cols = vars(`Item type`), rows = vars(corpusId)) + xlim(-6, 6) + 
+  labs(x = "Item difficulty", y = "Count") + 
+  theme(strip.text = element_text(size = 14), 
+    legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)), 
+        legend.position = "bottom")
+g.item.bank.enhancement
+#ggsave("plots/roar_presentation_study2_SI_item_bank.pdf", width = 6, height = 4, units = "in")
+```
+
+```{r}
+#write.csv(df.item.bank.updated, "corpus/item_bank_with_slow_items_v6.csv")
+```
+
+
+### fit statistics
+```{r}
+func.outfit <- function(th, b, resp) {
+  k <- th - b
+  p <- 0.5 + 0.5 * (exp(k) / (1 + exp(k)))
+  w <- p * (1 - p)
+  z <- (resp - p) / sqrt(w)
+  mean(z^2)
+}
+
+# Infit
+func.infit <- function(th, b, resp) {
+  k <- th - b
+  p <- 0.5 + 0.5 * (exp(k) / (1 + exp(k)))
+  w <- p * (1 - p)
+  z <- (resp - p) / sqrt(w)
+  sum(w * z^2) / sum(w)
+}
+
+#hist(df.resp$theta_estimate)
+
+func.fit.statistics <- function(df.word, df.resp){
+  list.word <- df.word$word
+  list.b <- df.word$b
+  list.infit <- NULL
+  list.outfit <- NULL
+  list.n <- NULL
+  for (i in 1: length(list.word)){
+    df <- as.matrix(df.resp %>% dplyr :: select(run_id, theta_estimate, list.word[i]) %>% 
+                drop_na())
+    n <- length(as.numeric(df[,3]))
+    resp <- as.numeric(df[,3])
+    th <- as.numeric(df[,2])
+    b <- list.b[i]
+    list.outfit <- c(list.outfit, func.outfit(th, b, resp))
+    list.infit <- c(list.infit, func.infit(th, b, resp))
+    list.n <- c(list.n, n)
+  }
+  return (df.word %>% mutate(infit = list.infit, 
+                             outfit = list.outfit, 
+                             n = list.n))
+}
+df.fit.statistics <- func.fit.statistics(df.item.bank.updated %>% filter(corpusId == "en-corpusNew-easy"), df.resp.low.performers.2 )
+
+df.fit.statistics.longer <- df.fit.statistics %>% 
+  pivot_longer(cols = c(infit, outfit), names_to = "fit_measure")
+
+
+ggplot(df.fit.statistics.longer, aes(x = value, y = b, color = realpseudo)) +
+  geom_text(aes(label = word), size = 2) + facet_grid(cols = vars(fit_measure), rows = vars(corpusId), scales = "free")   +theme(legend.position = 'bottom') +
+ xlim(0, 8) +  geom_vline(xintercept = 0.6, linetype = "dashed", color = "blue") + 
+   geom_vline(xintercept = 1.4, linetype = "dashed", color = "blue")
+```
+
+```{r}
+df.fit.statistics %>% 
+  filter(outfit < 1.4, outfit > 0.6) %>% 
+  group_by(realpseudo) %>% 
+  tally()
+```
+```{r}
+df.bad.fit.easy.items <- df.fit.statistics %>% 
+  filter(outfit > 1.4 | outfit < 0.6)
+```
+
+```{r}
+df.item.bank.updated.with.good <- df.item.bank.updated %>% 
+  filter(! word %in% df.bad.fit.easy.items$word)
+
+write.csv(df.item.bank.updated.with.good, "corpus/item_bank_with_slow_items_v6_with_good.csv")
+```
+
+# Validation with gold-standard measure
+```{r}
+df.validation <- read_csv("~/Documents/data/RWC_validation_data/RWC\ Validation\ Raw\ Data\ -\ English.csv")
+```
+
+```{r}
+df.validation.clean <- df.validation %>% 
+  select(PID, Grade, `LWID RAW`, `WA RAW`) %>% 
+  rename(assessment_pid = PID) %>% 
+  mutate(`LWID RAW` = as.numeric(`LWID RAW`), `WA RAW` = as.numeric(`WA RAW`)) %>% 
+  mutate(Grade = ifelse(Grade == "k", "K", Grade)) %>% 
+  filter(!is.na(`LWID RAW`), !is.na(`WA RAW`))
+
+```
+
+```{r}
+df.easy.block.score <- df.swr.easyblock.trials.unique %>% 
+  filter(completed == "TRUE", assessment_stage == "test_response") %>% 
+  filter(corpus_id == "en-corpusNew-easy") %>% 
+  group_by(assessment_pid, run_id) %>% 
+  summarise(total = sum(correct), rt = median(rt)) 
+```
+
+```{r}
+df.single.response.item <- df.swr.easyblock.trials.unique %>% 
+  filter(completed == "TRUE", assessment_stage == "test_response") %>% 
+  filter(!word %in% df.bad.fit.easy.items$word) %>% 
+  filter(trial_num_total <= 10) %>% 
+  group_by(word) %>% 
+  summarise(acc = mean(correct)) %>% 
+  filter(acc == 1 | acc == 0) 
+
+```
+
+## with early stage items 
+```{r}
+df.validation.resp.with.pid <- df.swr.easyblock.trials.unique %>% 
+  filter(completed == "TRUE", assessment_stage == "test_response") %>% 
+  filter(!word %in% df.bad.fit.easy.items$word, !word %in% df.single.response.item$word) %>% 
+  filter(trial_num_total <= 10) %>% 
+  select(assessment_pid, run_id, word, correct) %>% 
+  arrange(word) %>% 
+  pivot_wider(names_from = word, values_from = correct) %>% 
+  arrange(run_id)
+
+
+resp_df <- df.validation.resp.with.pid %>% select(-c(assessment_pid, run_id))
+
+df.new.params <- df.item.bank.updated %>% 
+  filter(!word %in% df.bad.fit.easy.items$word, !word %in% df.single.response.item$word, word %in% colnames(resp_df)) %>% 
+  arrange(word)
+
+```
+
+
+```{r}
+model <- mirt.model("F = 1-195")  # update number of items as needed
+
+# Fit a dummy model to get structure (1PL or 3PL, depending on your items)
+mod.dummy <- mirt(resp_df, model, itemtype = '1PL', verbose = FALSE, guess = 0.5)
+
+#se you have b values (one per item)
+b_values <- df.new.params$b  # e.g., c(-1.2, 0.5, 1.1, ...)
+names <- df.new.params$word
+
+b_values <- df.new.params$b  # e.g., c(-1.2, 0.5, 1.1, ...)
+names <- df.new.params$word
+pars <- mod2values(mod.dummy)
+
+pars <- mod2values(mod.dummy)
+for (i in 1:length(b_values)) {
+  # set a = 1
+  pars$value[pars$item == names[i] & pars$name == "a1"] <- 1
+  # set d = -a * b = -1 * b
+  pars$value[pars$item == names[i] & pars$name == "d"] <- -b_values[i]
+  # set guessing to 0.5
+  pars$value[pars$item == names[i] & pars$name == "g"] <- 0.5
+  # set upper asymptote to 1.0
+  pars$value[pars$item == names[i] & pars$name == "u"] <- 1.0
+  # fix all item parameters (not estimated)
+  pars$est[pars$item == names[i]] <- FALSE
+}
+
+
+mod.custom <- mirt(resp_df, 1, itemtype = "Rasch", pars = pars, pars.only = TRUE, guess = 0.5, technical = list(
+    NCYCLES = 2000))
+
+```
+
+```{r}
+#fun <- function(Theta, ...) as.numeric(dnorm(Theta, mean=0, sd = 6))
+
+theta_scores <- fscores(mod.custom, method = "ML", 
+                    full.scores.SE = T,
+                    theta_lim = c(-6, 6),
+                    min_theta= -6, 
+                    max_theta = 6)
+
+new_scores_with_slow_mle <- as_tibble(theta_scores)
+```
+```{r}
+df.validation.with.slow.theta <- df.validation.resp.with.pid %>% 
+  select(assessment_pid, run_id) %>% 
+  add_column(theta_with_slow= new_scores_with_slow_mle$F1, 
+             theta_with_slow_se = new_scores_with_slow_mle$SE_F1
+             ) %>%  
+  right_join(df.validation.clean) %>% 
+  filter(!is.na(theta_with_slow)) %>% 
+  mutate(theta_with_slow = ifelse(theta_with_slow == Inf, 6, theta_with_slow))
+```
+
+## adaptive version
+```{r}
+df.trend.cor <- df.swr.easyblock.trials.unique %>% 
+  filter(completed == "TRUE", assessment_stage == "test_response") %>% 
+  left_join(df.validation.clean) %>% 
+  filter(!is.na(`LWID RAW`)) %>% 
+  mutate(trial_num_total = trial_num_total - 10) %>% 
+  filter(trial_num_total >= 1) %>% 
+  group_by(trial_num_total) %>%
+  summarise(cor_lwid = cor(theta_estimate,`LWID RAW`), cor_wa = cor(theta_estimate, `WA RAW`)) %>% 
+  pivot_longer(cols = c(cor_lwid, cor_wa), names_to = "metric", values_to = "cor")
+
+```
+
+```{r}
+get_boot_corr_manual <- function(data, var1, var2, R = 2000) {
+  # 1. Clean data: keep only the two variables and remove NAs
+  df_clean <- data[complete.cases(data[, c(var1, var2)]), c(var1, var2)]
+  n <- nrow(df_clean)
+  
+  # 2. Run the bootstrap: sample with replacement R times
+  boot_dist <- replicate(R, {
+    indices <- sample(1:n, size = n, replace = TRUE)
+    resample <- df_clean[indices, ]
+    cor(resample[[var1]], resample[[var2]])
+  })
+  
+  # 3. Calculate original correlation and 95% quantiles
+  original_cor <- cor(df_clean[[var1]], df_clean[[var2]])
+  ci <- quantile(boot_dist, probs = c(0.025, 0.975))
+  
+  # Format output
+  return(data.frame(
+    metric = c("Original Correlation", "Lower 95% CI", "Upper 95% CI"),
+    value = c(original_cor, ci[1], ci[2]),
+    row.names = NULL
+  ))
+}
+
+```
+
+```{r}
+get_boot_corr_manual(df.validation.with.slow.theta , "LWID RAW", "theta_with_slow")
+```
+```{r}
+get_boot_corr_manual(df.validation.with.slow.theta, "WA RAW", "theta_with_slow")
+```
+```{r}
+
+ci_data <- data.frame(
+  metric = c("cor_lwid", "cor_wa"), 
+  ymin = c(0.67, 0.60),
+  ymax = c(0.74, 0.67),
+  x_start = 15,  # Adjust these to your specific x-range
+  x_end = 20     # Adjust these to your specific x-range
+)
+
+label_pts <- data.frame(
+  metric = c("cor_lwid", "cor_wa"),
+  x_pos = c(17.5, 17.5), # Adjust these to where the point should sit on the X-axis
+  y_pos = c(0.71, 0.63)
+)
+
+facet_names <- c(
+  "cor_lwid" = "ROAR-Word vs. WJ-LWID",
+  "cor_wa"   = "ROAR-Word vs. WJ-WA"
+)
+
+
+# 2. The Plot
+ggplot(df.trend.cor, aes(x = trial_num_total, y = cor)) + 
+  # Shaded regions
+  geom_rect(data = ci_data, 
+            aes(xmin = x_start, xmax = x_end, 
+                ymin = ymin, ymax = ymax),
+            inherit.aes = FALSE,
+            fill = "#E05A1D", alpha = 0.2) +
+  # The smooth line (color moved OUTSIDE aes)
+  # Added se = FALSE to remove the default grey shadow if you don't want it
+  geom_smooth(color = "black", se = TRUE) + 
+  geom_point(data = label_pts, aes(x = x_pos, y = y_pos), 
+             color = "#E05A1D", size = 3) +
+  facet_wrap(~metric, labeller = as_labeller(facet_names)) + # <-- ADD THIS
+  # Vertical lines
+  geom_vline(xintercept = 15, linetype = "dashed", color = "#E05A1D", size = 0.5) + 
+  geom_vline(xintercept = 20, linetype = "dashed", color = "#E05A1D", size = 0.5) +
+  labs(x = "Number of test items", y = "Correlation") + 
+  theme(strip.text = element_text(size = 14), 
+        axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(t = 10)))
+
+ggsave("plots/roar_presentation_study2_validation.pdf", width = 8, height = 4, units = "in")
+```
+```{r}
+ggplot(df.trend.cor, aes(x = trial_num_total, y = cor)) + 
+  # Shaded regions
+  # geom_rect(data = ci_data, 
+  #           aes(xmin = x_start, xmax = x_end, 
+  #               ymin = ymin, ymax = ymax),
+  #           inherit.aes = FALSE,
+  #           fill = "#E05A1D", alpha = 0.2) +
+  # The smooth line (color moved OUTSIDE aes)
+  # Added se = FALSE to remove the default grey shadow if you don't want it
+  geom_smooth(color = "black", se = TRUE) + 
+  #geom_point(data = label_pts, aes(x = x_pos, y = y_pos), 
+             #color = "#E05A1D", size = 2) +
+  facet_wrap(~metric, labeller = as_labeller(facet_names)) + # <-- ADD THIS
+  # Vertical lines
+  #geom_vline(xintercept = 15, linetype = "dashed", color = "#E05A1D", size = 0.5) + 
+  #geom_vline(xintercept = 20, linetype = "dashed", color = "#E05A1D", size = 0.5) +
+  labs(x = "Number of test items", y = "Correlation") + 
+  theme(strip.text = element_text(size = 14), 
+        axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(t = 10)))
+```
+
+
+# Test Information Improvement 
+
+```{r}
+df.new.item.bank <- df.item.bank.updated %>% 
+  filter(!word %in% df.bad.fit.easy.items$word)
+```
+
+```{r}
+Theta <- matrix(seq(-6,6, by = .01))
+```
+
+```{r}
+fisherInfo <- function(th, a, b, c){
+  p = c + (1-c) * exp(a*(th - b))/(1+ exp(a*(th - b)))
+  q = 1- p 
+  return  ((a^2) * (q/p) * ((p-c)^2) / ((1-c)^2))
+}
+```
+
+```{r}
+df.fisherInfo.analysis <- df.new.item.bank %>% 
+  crossing(tibble(theta = Theta)) %>% 
+  mutate(fisherInfo = fisherInfo(theta, a, b, c)) %>% 
+  group_by(theta) %>% 
+  summarise(testInfo = sum(fisherInfo))
+```
+
+
+```{r}
+df.fisherInfo.analysis.100.old <-df.item.bank.updated %>% 
+  filter(corpusId != "en-corpusNew-easy") %>% 
+  crossing(tibble(theta = Theta)) %>% 
+  mutate(fisherInfo = fisherInfo(theta, a, b, c)) %>% 
+  group_by(theta) %>% 
+  slice_max(order_by = fisherInfo, n = 84) %>% 
+  summarise(testInfo = sum(fisherInfo))
+
+df.fisherInfo.analysis.100.new.only <-df.item.bank.updated %>% 
+  filter(corpusId == "en-corpusNew-easy") %>% 
+  crossing(tibble(theta = Theta)) %>% 
+  mutate(fisherInfo = fisherInfo(theta, a, b, c)) %>% 
+  group_by(theta) %>% 
+  slice_max(order_by = fisherInfo, n = 84) %>% 
+  summarise(testInfo = sum(fisherInfo))
+
+df.fisherInfo.analysis.100 <- df.new.item.bank %>% 
+  crossing(tibble(theta = Theta)) %>% 
+  mutate(fisherInfo = fisherInfo(theta, a, b, c)) %>% 
+  group_by(theta) %>% 
+  slice_max(order_by = fisherInfo, n = 84) %>% 
+  summarise(testInfo = sum(fisherInfo))
+```
+
+```{r}
+df.compare <- df.fisherInfo.analysis.100 %>% 
+  mutate(`Item bank` = "Enhanced") %>% 
+  rbind(df.fisherInfo.analysis.100.old %>% mutate(`Item bank` = "Original")) 
+
+
+g.test.info <- ggplot(df.compare, aes(x = theta,
+                       y = testInfo, 
+                       color = `Item bank`)) +
+  geom_smooth(size = 2) +
+  scale_x_continuous(breaks = seq(-6, 6, by = 1)) + 
+  ylim(0, 8) + 
+  scale_color_manual(values = c("#E05A1D", "black")) + 
+  labs(x = "True theta abilities", y = "Test information from 84 adaptive items") + 
+  theme(legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)), 
+        legend.position = "bottom")
+g.test.info 
+ggsave("plots/roar_presentation_study2_test_info.pdf", width = 6, height = 6, units = "in")
+```
+```{r}
+
+g.test.info.original.only <- ggplot(df.compare %>% filter(`Item bank` == "Original"), aes(x = theta,
+                       y = testInfo, 
+                       color = `Item bank`)) +
+  geom_smooth(size = 2) +
+  scale_x_continuous(breaks = seq(-6, 6, by = 1)) + 
+  ylim(0, 8) + 
+  scale_color_manual(values = c("black")) + 
+  labs(x = "True theta abilities", y = "Test information from 84 adaptive items") + 
+  theme(legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)), 
+        legend.position = "bottom")
+g.test.info.original.only
+ggsave("plots/roar_presentation_study2_test_info_original_only.pdf", width = 6, height = 6, units = "in")
+```
+
+
+
+```{r}
+g.item.bank.enhancement + g.test.info
+
+ggsave("plots/roar_presentation_study2_test_improvement_combined.pdf", width = 12, height = 6, units = "in")
+```
+
+```{r}
+#df.new.item.bank <- read.csv("corpus/item_bank_with_slow_items_v6.csv")
+```
+
+

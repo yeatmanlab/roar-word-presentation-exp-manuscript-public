@@ -1,0 +1,2589 @@
+---
+title: "ROAR-presentation-experiment-analysis-study1"
+author: "Wanjing Anya Ma"
+date:  "`r Sys.Date()`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Load Packages
+
+Let's first load the packages that we need for this chapter.
+
+```{r, message=FALSE, warning = FALSE, echo = FALSE}
+library("knitr") # for rendering the RMarkdown file
+library("tidyverse") # for data wrangling 
+library(dplyr)
+library(mirt)
+library('ggpubr')
+library(Metrics)
+library(hash)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(rstudioapi)
+library(viridis)
+library(TAM)
+library(mgcv)
+library(viridis)
+library(patchwork)
+library(reshape2)
+library("eirm")
+library("janitor")     # for cleaning column names
+library("broom.mixed") # for tidying up linear models 
+library("emmeans")     # for the joint_tests() function 
+library("lme4")        # for linear mixed effects models
+library("performance") # for assessing model performance
+library("see")         # for assessing model performance
+library(imv)
+```
+
+## Settings
+
+```{r echo = FALSE}
+# sets how code looks in knitted document
+opts_chunk$set(comment = "")
+
+# suppresses warning about grouping 
+options(dplyr.summarise.inform = F)
+```
+
+
+# Data
+```{r}
+df.data <- read_csv("data/study1_combined_raw_trials.csv") 
+df.items <- read_csv("corpus/item_bank_v5_520.csv")
+```
+```{r}
+df.data.pt <- read_csv("data/study1_brazil_raw_data_new.csv") 
+`
+
+```{r}
+timeConvert <- c(
+  "80" ="T1",
+  "160"= "T2",
+  "350"="T3",
+  "700"= "T4",
+  "infinite"= "T5"
+)
+```
+
+# Study 1 English
+## Descriptives
+1. We have recruited N = 664 participants from three sources: 
+```{r}
+df.data %>% 
+  filter(response_source == "keyboard") %>% 
+  filter(trial_num_total == 1) %>% 
+  filter(!is.na(assessment_pid)) %>% 
+  group_by(age_group, assessment_pid) %>% 
+  tally() %>% 
+  group_by(age_group) %>% 
+  tally()
+```
+
+2. We have 635 completed runs:
+```{r}
+df.data %>% 
+  filter(trial_num_total == 1, completed == TRUE) %>% 
+  filter(response_source == "keyboard") %>% 
+  filter(!is.na(assessment_pid)) %>% 
+  group_by(age_group, assessment_pid) %>% 
+  tally() %>% 
+  group_by(age_group) %>% 
+  tally()
+
+df.data %>% 
+  filter(trial_num_total == 1, completed == TRUE) %>% 
+  filter(!is.na(assessment_pid)) %>% 
+  group_by(response_source, assessment_pid) %>% 
+  tally() %>% 
+  group_by(response_source) %>% 
+  tally()
+```
+
+3. Exclusion: 
+a. We exclude N = 18 rapid guessing participants based on the operational flag. 
+
+```{r}
+df.rapid.guessing <- df.data %>% 
+  filter(response_source == "keyboard") %>% 
+  filter(completed == TRUE, !is.na(assessment_pid)) %>% 
+  group_by(age_group, run_id) %>% 
+  summarise(medianRT = median(rt), acc = mean(correct)) %>% 
+  filter(medianRT < 450, acc < 0.65) 
+
+```
+
+b. 12 people who spent more than 60min in testing
+```{r}
+df.summary.long.time <- df.data %>% 
+   filter(response_source == "keyboard") %>% 
+  filter(completed == TRUE, !is.na(assessment_pid), assessment_stage == "test_response") %>% 
+  group_by(age_group, run_id) %>% 
+  summarise(total_time_min = max(time_elapsed)/60000) %>% 
+  filter(total_time_min > 60)
+```
+
+```{r}
+df.data.clean.raw <- df.data %>% 
+  filter(completed == TRUE, !is.na(assessment_pid), assessment_stage == "test_response", response_source == "keyboard", stimulus_presentation_time != 'T4') %>% 
+  filter(!run_id %in% df.rapid.guessing$run_id, !run_id %in% df.summary.long.time$run_id) %>% 
+  mutate(user_grade = as.numeric(user_grade)) %>% 
+  mutate(age = ifelse(is.na(age_in_months), NA, round(age_in_months/12))) %>% 
+  mutate(
+    age_category= case_when(
+      user_grade <= 2 ~ "Early Elementary",
+      user_grade <= 5 ~ "Upper Elementary",
+      user_grade >= 6 & user_grade < 9 ~ "Middle School",
+      user_grade >= 9 & user_grade < 13 ~ "High School",
+      TRUE ~ "College"  # default catch-all
+    )) %>% 
+  filter(response_source == "keyboard") 
+
+
+```
+
+valid response
+```{r}
+length(df.data.clean.raw$run_id)
+df.data.clean.raw %>% 
+  mutate(valid_response = ifelse(rt >= 200 & rt <= 5000, 1, 0)) %>% 
+  group_by(valid_response) %>% 
+  tally()
+
+df.data.clean <- df.data.clean.raw %>% 
+  filter(rt >= 200, rt <= 5000)
+
+df.data.clean.raw %>% 
+  mutate(valid_response = ifelse(rt >= 200 & rt <= 5000, 1, 0)) %>% 
+  group_by(stimulus_presentation_time) %>% 
+  summarise(1-mean(valid_response))
+```
+
+4. Grade Distribution 
+```{r}
+df.summary <- df.data.clean %>% 
+  group_by(run_id,user_grade) %>% 
+  tally() %>% 
+  mutate(n = 1) 
+g.1 <-  ggplot(df.summary, aes(x = user_grade)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "grey", position = "identity", alpha = 1) + 
+  scale_x_continuous(breaks = 1:13, labels = 1:13) + labs(title = "English ROAR-Word") + labs(x = "Grade level", y = "Count")
+g.1
+```
+
+
+# Study 2 Brazil Data 
+## Descriptives
+1. We have recruited 2626 participants had at least one complete run. 
+```{r}
+df.data.pt %>% 
+  filter(trial_num_total == 1) %>% 
+  group_by(user_grade) %>% 
+  tally() 
+
+df.data.pt %>% 
+  group_by(run_id) %>% 
+  tally()
+```
+2. Exclusion: 
+a. We exclude N = 112 rapid guessing participants based on the operational flag. 
+
+```{r}
+df.rapid.guessing.pt <- df.data.pt %>% 
+  filter(!is.na(assessment_pid)) %>% 
+  group_by(run_id) %>% 
+  summarise(medianRT = median(rt), acc = mean(correct)) %>% 
+  filter(medianRT < 700, acc < 0.60)
+
+length(df.rapid.guessing.pt$run_id)
+```
+
+b. 86 people who spent more than 60min in testing
+```{r}
+df.summary.long.time.pt <- df.data.pt %>% 
+  filter(assessment_stage == "test_response") %>% 
+  group_by(run_id) %>% 
+  summarise(total_time_min = max(time_elapsed)/60000) %>% 
+  filter(total_time_min > 60)
+
+length(df.summary.long.time.pt$run_id)
+```
+
+```{r}
+df.data.clean.pt.raw <- df.data.pt %>% 
+  filter(assessment_stage == "test_response") %>% 
+  filter(!run_id %in% df.rapid.guessing.pt$run_id, !run_id %in% df.summary.long.time.pt$run_id) %>% 
+  mutate(user_grade = as.numeric(user_grade)) 
+
+df.pt.responses <- df.data.clean.pt.raw %>% 
+  filter(rt < 30000) 
+
+mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3
+
+length(df.data.clean.pt$trial_id)
+
+df.data.clean.pt.raw %>% 
+  mutate(valid_response = ifelse(rt >= 200 & rt <= (mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3), 1, 0)) %>% 
+  group_by(valid_response, stimulusPresentationTime) %>% 
+  tally()
+
+df.data.clean.pt.raw %>% 
+  mutate(valid_response = ifelse(rt >= 200 & rt <= (mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3), 1, 0)) %>% 
+  group_by(stimulusPresentationTime) %>% 
+  summarise(1-mean(valid_response), n = n())
+
+df.data.clean.pt <- df.data.clean.pt.raw %>% 
+  filter(rt >= 200, rt <= (mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3)) %>% 
+  mutate(
+    age_category= case_when(
+      user_grade <= 2 ~ "Early Elementary",
+      user_grade <= 5 ~ "Upper Elementary",
+      user_grade >= 6 & user_grade < 9 ~ "Middle School",
+      user_grade >= 9 & user_grade < 13 ~ "High School",
+      TRUE ~ "College"  # default catch-all
+    )) 
+
+```
+
+3. Grade Distribution 
+```{r}
+df.summary.pt <- df.data.clean.pt %>% 
+  group_by(run_id,user_grade) %>% 
+  tally() %>% 
+  mutate(n = 1) 
+
+length(df.summary.pt$run_id)
+
+g.1.pt <-  ggplot(df.summary.pt, aes(x = user_grade)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "grey", position = "identity", alpha = 1) + 
+  scale_x_continuous(breaks = 1:13, labels = 1:13) + labs(title = "Portuguese ROAR-Palavra") + labs(x = "Grade level", y = "Count")
+g.1.pt
+```
+```{r}
+g.1.grade.distribution <- g.1 + g.1.pt
+
+ggsave("plots/roar_presentation_1_grade_dist.pdf", width = 8, height = 5, units = "in")
+
+```
+
+
+# RQ1: Does presentation time of the stimulus impact the performance?
+## English
+```{r}
+df.summary.grade.en <- df.data.clean %>% 
+  filter(stimulus_presentation_time != 'T4') %>% 
+  group_by(user_grade, run_id, stimulus_presentation_time, realpseudo, age_group) %>% 
+  summarise(n = n(), accuracy = mean(correct), rt = median(log(rt))) %>% 
+  pivot_longer(cols = c(accuracy, rt), names_to = "metric", values_to = "value")
+
+
+g.1bc.grade <- ggplot(data = df.summary.grade.en %>% 
+         mutate(user_grade = as.factor(user_grade)),
+       mapping = aes(x = user_grade,
+                     y = value,
+                     group = stimulus_presentation_time,
+                     color = stimulus_presentation_time)) + 
+  geom_smooth(se = FALSE) +
+  stat_summary(fun.data = "mean_cl_boot",
+               position = position_dodge(width = 0.5), alpha = 0.8) +
+  scale_fill_viridis(option='C', discrete=TRUE, begin=.75, end=0) + 
+  theme(legend.position = "bottom") + facet_wrap(~metric, scales = "free") + labs(title = "English ROAR-Word")
+
+g.1bc.grade 
+```
+
+```{r}
+# df.summary.block <- df.data.clean %>% 
+#   mutate(age_group_2 = ifelse(age_group == "adult", "adult", "development")) %>% 
+#   group_by(trial_num_total, stimulus_presentation_time, age_category) %>% 
+#   summarise(n = n(), acc = mean(correct), rt = median(rt)) %>% 
+#   filter(trial_num_total < 206)
+# 
+# ggplot(df.summary.block, aes(x = trial_num_total, y = acc, color = stimulus_presentation_time)) +
+#   geom_smooth(size = 0.8) +
+#   geom_point(size = 0.4, alpha = 0.1) +
+#   facet_wrap(~age_category) 
+```
+
+ 
+
+```{r}
+# hi <- df.data.clean %>% 
+#   #filter(stimulus_presentation_time == "T1") %>% 
+#   group_by(word, realpseudo, stimulus_presentation_time) %>% 
+#   summarise(acc = mean(correct), rt = median(log(rt)), n = n()) %>% 
+#   filter(n > 20) %>% 
+#   arrange(-acc) 
+# 
+# ggplot(hi, aes(x = acc, y = rt, group = realpseudo, color = realpseudo)) +
+#   geom_smooth(size = 0.8) +
+#   geom_point(size = 0.4, alpha = 0.1) +
+#   facet_wrap(~stimulus_presentation_time) + stat_cor()
+```
+
+```{r}
+df.subj.summary <- df.data.clean %>% 
+  #filter(stimulus_presentation_time != 'T4') %>% 
+  mutate(
+    stimulus_presentation_time = factor(
+      stimulus_presentation_time,
+      levels = c("T3", "T1", "T2", "T5")
+    ), 
+    age_category = factor(age_category, levels =  c("Early Elementary", "Upper Elementary", "Middle School", "High School", "College"))
+  ) %>% 
+  group_by(run_id, stimulus_presentation_time, user_grade) %>% 
+  summarise(log_rt = median(log(rt)), acc = mean(correct), rt = median(rt)) %>% 
+  ungroup()
+
+```
+
+```{r}
+lm.1 <- lm(acc ~ stimulus_presentation_time + user_grade, df.subj.summary)
+
+summary(lm.1)
+```
+
+```{r}
+lm.rt <- lm(rt ~ user_grade + stimulus_presentation_time , df.subj.summary)
+summary(lm.rt)
+
+lm.rt.log <- lm(log_rt ~ user_grade + stimulus_presentation_time , df.subj.summary)
+summary(lm.rt.log)
+```
+
+## Brazil 
+```{r}
+df.pt.items <- df.data.clean.pt %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "infinite", 0, 1)) %>% 
+  mutate(word2 = paste0(word, "_",fast_presentation)) %>% 
+  arrange(word) %>% 
+  group_by(realpseudo, fast_presentation,  word, word2) %>% 
+  summarise(acc = mean(correct)) 
+```
+
+```{r}
+df.data.pt.long <- df.data.clean.pt %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "infinite", 0, 1)) %>% 
+  mutate(word2 = paste0(word, "_",fast_presentation)) %>% 
+  arrange(word) %>% 
+  select(run_id, word, word2, correct, fast_presentation, realpseudo)
+```
+
+
+```{r}
+df.subj.summary.pt <- df.data.clean.pt %>%
+  group_by(run_id, stimulus_presentation_time, user_grade) %>% 
+  summarise(log_rt = median(log(rt+1)), acc = mean(correct), rt = median(rt)) 
+
+```
+
+
+```{r}
+lm.pt.1 <- lm(acc ~ user_grade + stimulus_presentation_time, df.subj.summary.pt)
+
+summary(lm.pt.1)
+
+lm.pt.1.rt <- lm(rt ~ user_grade + stimulus_presentation_time, df.subj.summary.pt)
+
+summary(lm.pt.1.rt)
+
+lm.pt.1.rt.log <- lm(log_rt ~ user_grade + stimulus_presentation_time, df.subj.summary.pt)
+
+summary(lm.pt.1.rt.log)
+```
+
+
+## plot 
+```{r}
+library(forcats)
+df.summary.grade <- df.data.clean %>% 
+  filter(stimulus_presentation_time != 'T4') %>% 
+  mutate( stimulus_presentation_time = case_when( stimulus_presentation_time == 'T1' ~ "80ms", 
+                                                  stimulus_presentation_time == 'T2' ~ "160ms",
+                                                  stimulus_presentation_time == 'T3' ~ "350ms",
+                                                  stimulus_presentation_time == 'T5' ~ "infinite"
+                                                  )) %>% 
+  select(user_grade, age_category, run_id, stimulus_presentation_time, realpseudo, rt, correct) %>%
+  add_column(task = "ROAR-Word") %>% 
+  rbind(df.data.clean.pt %>% 
+  mutate(stimulus_presentation_time = case_when( stimulus_presentation_time == 'infinite' ~ "infinite",
+                                                  stimulus_presentation_time == '350' ~ "350ms"
+                                                  )) %>% 
+  select(user_grade, age_category, run_id, stimulus_presentation_time, realpseudo, rt, correct) %>%
+  add_column(task = "ROAR−Palavra")) %>% 
+  group_by(task, age_category, run_id, stimulus_presentation_time) %>% 
+  summarise(n = n(), Accuracy = mean(correct), RT = median(log(rt))) %>% 
+  pivot_longer(cols = c(Accuracy, RT), names_to = "metric", values_to = "value") %>% 
+  mutate(age_category = factor(
+    age_category,
+    levels = c("Early Elementary", "Upper Elementary", "Middle School", "High School", "College")
+  )) %>% 
+  mutate(stimulus_presentation_time= factor(
+    stimulus_presentation_time,
+    levels = c("80ms", "160ms", "350ms", "infinite")
+  )) 
+  
+
+  
+```
+```{r}
+pd <- position_dodge(width = 0.2)
+g.1.acc <- ggplot(df.summary.grade %>% filter(metric == "Accuracy", age_category == "Early Elementary"),
+       aes(x = stimulus_presentation_time,
+           y = value,
+           color = age_category,
+           group = age_category)) +
+
+  stat_summary(fun = mean,
+               geom = "line",
+               position = pd,
+               linewidth = 1) +
+
+  stat_summary(fun.data = "mean_cl_boot",
+               fun.args = list(conf.int = 0.95),
+               geom = "pointrange",
+               position = pd,
+               alpha = 0.8) + 
+  scale_color_viridis_d(option = "C", begin = .75, end = 0)  + facet_wrap(~task) + ylim(c(NA, 1))  + facet_wrap(~task) + labs(y = "Accuracy",  x = "Stimulus presentation time", title = "Response Accuracy") + 
+  theme(legend.text = element_text(size = 12), 
+        plot.title = element_text(size = 16, hjust = 0.5), 
+        legend.title = element_text(size = 14),
+        strip.text = element_text(size = 14), 
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)))+ theme(legend.position = "none")
+
+g.1.rt <- ggplot(df.summary.grade %>% filter(metric == "RT", age_category == "Early Elementary"),
+       aes(x = stimulus_presentation_time,
+           y = value,
+           color = age_category,
+           group = age_category)) +
+
+  stat_summary(fun = mean,
+               geom = "line",
+               position = pd,
+               linewidth = 1) +
+
+  stat_summary(fun.data = "mean_cl_boot",
+               fun.args = list(conf.int = 0.95),
+               geom = "pointrange",
+               position = pd,
+               alpha = 0.8) + 
+  scale_color_viridis_d(option = "C", begin = .75, end = 0)  + facet_wrap(~task) + facet_wrap(~task) + labs(y = "Response time (ms) in log scale", color = "Grade level",  x = "Stimulus presentation time", title = "Response Time")  +theme(legend.text = element_text(size = 12),                                                                                       strip.text = element_text(size = 14), 
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 16, hjust = 0.5), 
+        axis.title = element_text(size = 14, margin = margin(t = 10))) + guides(color = guide_legend(nrow = 2))  +  theme(legend.position = "bottom") 
+
+g.1.acc/g.1.rt
+ggsave("plots/roar_presentation_2_grade_trend_v2_early_elementary_only.pdf", width = 8, height = 8, units = "in")
+```
+
+```{r}
+g.1.acc <- ggplot(df.summary.grade %>% filter(metric == "Accuracy"),
+       aes(x = stimulus_presentation_time,
+           y = value,
+           color = age_category,
+           group = age_category)) +
+
+  stat_summary(fun = mean,
+               geom = "line",
+               position = pd,
+               linewidth = 1) +
+
+  stat_summary(fun.data = "mean_cl_boot",
+               fun.args = list(conf.int = 0.95),
+               geom = "pointrange",
+               position = pd,
+               alpha = 0.8) + 
+  scale_color_viridis_d(option = "C", begin = .75, end = 0)  + facet_wrap(~task) + ylim(c(NA, 1))  + facet_wrap(~task) + labs(y = "Accuracy",  x = "Stimulus presentation time", title = "Response Accuracy") + 
+ 
+  theme(legend.text = element_text(size = 12), 
+        plot.title = element_text(size = 16, hjust = 0.5), 
+        legend.title = element_text(size = 14),
+        strip.text = element_text(size = 14), 
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)))+ theme(legend.position = "none")
+
+g.1.rt <- ggplot(df.summary.grade %>% filter(metric == "RT"),
+       aes(x = stimulus_presentation_time,
+           y = value,
+           color = age_category,
+           group = age_category)) +
+
+  stat_summary(fun = mean,
+               geom = "line",
+               position = pd,
+               linewidth = 1) +
+
+  stat_summary(fun.data = "mean_cl_boot",
+               fun.args = list(conf.int = 0.95),
+               geom = "pointrange",
+               position = pd,
+               alpha = 0.8) + 
+  scale_color_viridis_d(option = "C", begin = .75, end = 0)  + facet_wrap(~task) + facet_wrap(~task) + labs(y = "Response time (ms) in log scale", color = "Grade level",  x = "Stimulus presentation time", title = "Response Time") +theme(legend.text = element_text(size = 12),                                                                                       strip.text = element_text(size = 14), 
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 16, hjust = 0.5), 
+        axis.title = element_text(size = 14, margin = margin(t = 10))) + guides(color = guide_legend(nrow = 2))  +  theme(legend.position = "bottom") 
+
+g.1.acc/g.1.rt
+
+ggsave("plots/roar_presentation_2_grade_trend_v2.pdf", width = 8, height = 8, units = "in")
+```
+
+```{r}
+# g.1.acc <- ggplot(data = df.summary.grade %>% 
+#          filter(metric == "Accuracy") %>% 
+#     mutate(
+#       user_grade = as.factor(user_grade),
+#       stimulus_presentation_time = factor(
+#         stimulus_presentation_time,
+#         levels = c("80ms", "160ms", "350ms", "infinite")
+#       )
+#     ),
+#        mapping = aes(x = user_grade,
+#                      y = value,
+#                      group = stimulus_presentation_time,
+#                      color = stimulus_presentation_time)) + 
+#   geom_smooth(se = FALSE, method = "loess") +
+#   stat_summary(fun.data = "mean_cl_boot",
+#                position = position_dodge(width = 0.5), alpha = 0.8) +
+#   scale_fill_viridis(option='C', discrete=TRUE, begin=.75, end=0) + 
+#   theme(legend.position = "none") + facet_wrap(~task) + labs(y = "Accuracy", x = "Grade level", color = "Stimulus presentation time") 
+# 
+# g.1.rt <- ggplot(data = df.summary.grade %>% 
+#          filter(metric == "RT") %>% 
+#     mutate(
+#       user_grade = as.factor(user_grade),
+#       stimulus_presentation_time = factor(
+#         stimulus_presentation_time,
+#         levels = c("80ms", "160ms", "350ms", "infinite")
+#       )
+#     ),
+#        mapping = aes(x = user_grade,
+#                      y = value,
+#                      group = stimulus_presentation_time,
+#                      color = stimulus_presentation_time)) + 
+#   geom_smooth(se = FALSE, method = "loess") +
+#   stat_summary(fun.data = "mean_cl_boot",
+#                fun.args = list(conf.int = 0.95),
+#                position = position_dodge(width = 0.5), alpha = 0.8) +
+#   scale_fill_viridis(option='C', discrete=TRUE, begin=.75, end=0) + 
+#   theme(legend.position = "bottom") + facet_wrap(~task) + labs(y = "Response time (ms) in log scale", x = "Grade level", color = "Stimulus presentation time")
+# 
+# g.1.acc / g.1.rt
+#ggsave("plots/roar_presentation_2_grade_trend.pdf", width = 6, height = 6, units = "in")
+```
+
+# RQ2: Dimensionality Test
+What is the relationship between word difficulty and presentation time? 
+
+## English 
+
+```{r}
+df.trials.clean.dev <- df.data.clean %>% 
+  #filter(age_group != "adult") %>% 
+  filter(!stimulus_presentation_time %in%  c("T4", "T1")) %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "T5", 0, 1))
+
+df.items.exclude <- df.trials.clean.dev %>% 
+  filter(rt < 5000, rt > 200) %>% 
+  group_by(stimulus_presentation_time, word) %>% 
+  summarise(acc = mean(correct)) %>% 
+  filter(acc == 1 | acc == 0)
+```
+
+
+```{r}
+df.trials.combined <- df.trials.clean.dev %>% 
+  select(run_id, age_group, fast_presentation, word, realpseudo, stimulus_presentation_time, correct, rt, difficulty) %>% 
+  #mutate(word2 = paste0(word, "_", fast_presentation)) %>% 
+  filter(!word %in% df.items.exclude$word) %>% 
+  arrange(fast_presentation, word) %>% 
+  filter(rt < 5000, rt > 200)
+  #select(run_id, word2, correct) #%>%
+  #pivot_wider(names_from = word2, values_from = correct)
+
+df.trials.combined.full <- df.trials.combined %>% 
+  mutate(word2 = paste0(word, "_", fast_presentation)) %>% 
+  arrange(fast_presentation, word) 
+```
+
+#### unidimensional model
+```{r}
+funct.get.params.full <- function(df){
+  df.resp <- df %>% 
+    arrange(word, word2) %>% 
+    select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+  
+  mod <- mirt(df.resp %>% select(-run_id), 1, itemtype = 'Rasch', guess = 0.5, technical = list(NCYCLES = 5000))
+  
+  df.word.params <- data.frame(coef(mod, IRTpars = TRUE, simplify = TRUE)) %>%
+    rownames_to_column(var = "word2") 
+  
+  df.persons <- as.data.frame(fscores(mod, full.scores.SE = TRUE)) %>% 
+    add_column(run_id = df.resp$run_id) 
+  
+  tables_list <- list()
+  tables_list[['params']] <- df.word.params
+  tables_list[['persons']] <- df.persons
+  tables_list[['model']] <- mod
+  
+  return (tables_list)
+}
+
+df.results.full.model <- funct.get.params.full(df.trials.combined.full)
+```
+
+observed correlation
+```{r}
+df.exclude <- df.trials.combined.full %>% 
+  group_by(word2, word, fast_presentation) %>% 
+  tally() %>% 
+  filter(n < 50)
+
+df.unidimensional <- df.results.full.model$params %>% 
+  left_join(df.trials.combined.full %>% 
+  select(word2, word, fast_presentation, realpseudo) %>% 
+  unique()) %>% 
+  select(word, fast_presentation, items.b, realpseudo) %>% 
+  pivot_wider(names_from = fast_presentation, values_from = items.b) %>% 
+  filter(!word %in% df.exclude$word) %>% 
+  mutate(difference = (`1`-`0`))
+
+```
+
+```{r}
+cor.test(df.unidimensional$`0`, df.unidimensional$`1`)
+```
+```{r}
+mean(df.unidimensional$`0` - df.unidimensional$`1`, na.rm = TRUE)
+sd(df.unidimensional$`0` - df.unidimensional$`1`, na.rm = TRUE)
+```
+
+```{r}
+r_val <- cor(df.unidimensional$`0`, df.unidimensional$`1`, use = "complete.obs")
+
+ct <- cor.test(df.unidimensional$`0`, df.unidimensional$`1`)
+
+r_val <- ct$estimate
+p_val <- ct$p.value
+
+label <- paste0(
+  "italic(r) == ", sprintf("%.2f", r_val)
+)
+
+g.en.1d.param.1 <- ggplot(df.unidimensional, aes(x = `0`, y = `1`)) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_smooth(method = 'lm') +
+  coord_equal() +
+  xlim(-6, 6) + 
+  ylim(-6, 6) +
+  geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") +
+  annotate("text", x = -5.5, y = 5.5, label = label, hjust = 0, size = 5, parse = TRUE) +
+  labs(
+    x = "Word difficulty with infinite presentation time",
+    y = "Word difficulty with fast presentation time",
+    title = "English ROAR-Word"
+  )
+
+
+g.en.1d.param.1 
+```
+
+permutation test
+```{r}
+funct.get.params.full.perm <- function(df) {
+  df.resp <- df %>% 
+    arrange(word, word2) %>% 
+    select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+  
+  # Ensure we handle the matrix correctly for mirt
+  resp_matrix <- df.resp %>% select(-run_id)
+  
+  mod <- mirt(resp_matrix, 1, itemtype = 'Rasch', 
+              guess = 0.5, technical = list(NCYCLES = 5000), verbose = FALSE)
+  
+  df.word.params <- data.frame(coef(mod, IRTpars = TRUE, simplify = TRUE)$items) %>%
+    rownames_to_column(var = "word2") 
+  
+  return(list(params = df.word.params))
+}
+```
+
+```{r}
+run_permutations <- function(df, n_perm = 100, seed = 123) {
+  set.seed(seed)
+  n <- nrow(df)
+  
+  # Initialize storage for correlations and parameters
+  results_list <- list()
+  correlations <- numeric(n_perm)
+  
+  for (i in seq_len(n_perm)) {
+    
+    repeat {
+      # Step 1: Permute
+      df_perm <- df %>%
+  group_by(run_id) %>%
+  mutate(
+    n = n(),
+    fast_presentation = {
+      n_i <- first(n)  # scalar per group
+      sample(
+        c(rep(1, round(2/3 * n_i)),
+          rep(0, n_i - round(2/3 * n_i)))
+      )
+    }
+  ) %>%
+  ungroup() %>%
+  select(-n) %>%
+  mutate(word2 = paste0(word, "_", fast_presentation))
+      
+      
+      
+      # Step 2: Check for items with 100% accuracy (mirt handles this poorly)
+      bad_items <- df_perm %>%
+        group_by(word2) %>%
+        summarise(acc = mean(correct), .groups = "drop") %>%
+        filter(acc == 1)
+      
+      if (nrow(bad_items) == 0) break
+    }
+    
+    # Step 4: Run the Rasch model
+    params_list <- funct.get.params.full.perm(df_perm)
+    
+    # Filter out items with low observations
+    df.exclude <- df_perm %>% 
+      group_by(word2) %>% 
+      tally() %>% 
+      filter(n < 50)
+    
+    #print(df.exclude$word2)
+    
+    # Clean and pivot for correlation
+    hi <- params_list$params %>% 
+      left_join(df_perm %>% select(word2, word, fast_presentation) %>% unique(), by = "word2") %>% 
+      filter(!word2 %in% df.exclude$word2) %>%
+      select(word, fast_presentation, b) %>% 
+      pivot_wider(names_from = fast_presentation, values_from = b) 
+    
+    # Calculate and store correlation
+    current_cor <- cor(hi$`0`, hi$`1`, use = "complete.obs")
+    correlations[i] <- current_cor
+    
+    # Store the full results for this iteration
+    results_list[[i]] <- list(
+      iteration = i,
+      correlation = current_cor,
+      params = params_list$params
+    )
+    
+    message("Finished permutation ", i, " | Correlation: ", round(current_cor, 3))
+  }
+  
+  # Return a combined object
+  return(list(correlations = correlations, full_data = results_list))
+}
+
+# Run for 10 permutations
+output <- run_permutations(df.trials.combined, n_perm = 100)
+
+# Access your results
+print(output$correlations)
+mean_cor <- mean(output$correlations)
+
+```
+
+get confidence interval 
+```{r}
+perm_vector <- output$correlations
+perm_vector <- unlist(perm_vector)
+
+null_interval <- quantile(perm_vector, probs = c(0.025, 0.975))
+
+print(null_interval)
+
+```
+
+
+##### compare parameters
+```{r}
+g.en.1d.param.2 <- ggplot(df.unidimensional, mapping = aes(x = `0`,
+                     y = difference, group = realpseudo, color = realpseudo)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth() + ylim(-3, 3) + xlim(-5, 5)+ coord_equal() + labs(x = "word difficulty with infinite presentation time", y = "difficullty difference between [fast - infinite]", title = "ROAR-Word: 1d-model") + coord_equal()
+
+g.en.1d.param.2
+```
+
+##### compare thetas
+
+```{r}
+df.trials.combined.full.resp.with.fast <- df.trials.combined.full %>% 
+  mutate(correct = ifelse(fast_presentation == 0, NA, correct)) %>% 
+  select(run_id, word2, correct) %>% 
+  pivot_wider(names_from = word2, values_from = correct) %>% 
+  arrange(run_id)
+
+df.trials.combined.full.resp.with.slow <- df.trials.combined.full %>% 
+  mutate(correct = ifelse(fast_presentation == 1, NA, correct)) %>% 
+  select(run_id, word2, correct) %>% 
+  pivot_wider(names_from = word2, values_from = correct) %>% 
+  arrange(run_id)
+
+df.persons.model.fast <- as.data.frame(fscores(df.results.full.model$model, method = "ML",full.scores.SE = TRUE, response.pattern = df.trials.combined.full.resp.with.fast %>% select(-run_id),max_theta = 6, min_theta = -6 )) %>% 
+    add_column(run_id = df.trials.combined.full.resp.with.fast$run_id) 
+
+df.persons.model.slow <- as.data.frame(fscores(df.results.full.model$model, method = "ML", full.scores.SE = TRUE, response.pattern = df.trials.combined.full.resp.with.slow %>% select(-run_id), max_theta = 6, min_theta = -6 )) %>% 
+    add_column(run_id = df.trials.combined.full.resp.with.slow$run_id) 
+```
+
+```{r}
+plot
+
+df.plot <- data.frame(
+  fast = df.persons.model.fast$F1,
+  slow = df.persons.model.slow$F1
+)
+
+ggplot(df.plot, aes(x = fast, y = slow)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Fast (F1)", y = "Slow (F1)") +
+  theme_minimal()
+```
+
+
+### 2d-dimensional
+
+```{r}
+df.trials.combined.full %>% 
+  select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+```
+
+```{r}
+Q_2d <- cbind(
+  rep(1, 1068),                # column 1: all 1s
+  rep(c(0, 1), length.out = 1068)  # column 2: repeating 0,1,0,1,...
+)
+```
+
+```{r}
+funct.get.params.full.2d <- function(df){
+  Q_2d <- cbind(
+  rep(1, 1068),                # column 1: all 1s
+  rep(c(0, 1), length.out = 1068)  # column 2: repeating 0,1,0,1,...
+  )
+  
+  mirt_2d <- mirt.model(Q_2d)
+  
+  df.resp <- df %>% 
+    arrange(word, word2) %>% 
+    select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+  
+  mod <- mirt(df.resp[-1], model = mirt_2d, itemtype = "Rasch", guess = 0.5)
+  
+  df.word.params <- data.frame(coef(mod, simplify = TRUE)) %>%
+    rownames_to_column(var = "word2") 
+  
+  df.persons <- as.data.frame(fscores(mod, full.scores.SE = TRUE)) %>% 
+    add_column(run_id = df.resp$run_id) 
+  
+  tables_list <- list()
+  tables_list[['params']] <- df.word.params
+  tables_list[['persons']] <- df.persons
+  tables_list[['model']] <- mod
+  
+  return (tables_list)
+}
+
+df.results.full.model.2d <- funct.get.params.full.2d(df.trials.combined.full)
+```
+
+```{r}
+extract.mirt(df.results.full.model$model, 'nest')
+extract.mirt(df.results.full.model.2d$model, 'nest')
+```
+
+
+```{r}
+anova(df.results.full.model$model, df.results.full.model.2d$model)
+```
+```{r}
+lrt <- anova(
+  df.results.full.model$model,
+  df.results.full.model.2d$model
+)
+lrt$p
+```
+
+```{r}
+df.2d.params <- as.tibble(coef(mirt_mod_2d, simplify = TRUE)$items) %>% 
+  add_column(word2 = names(df.resp.full[-1])) %>% 
+  left_join(df.trials.combined.full %>% 
+  select(word, realpseudo, word2, fast_presentation) %>% 
+  unique()) %>% 
+  mutate(d = -d) %>% 
+  select(word, realpseudo, fast_presentation, d) %>% 
+  pivot_wider(names_from = fast_presentation, values_from = d) %>% 
+  filter(!word %in% df.exclude$word) %>% 
+  mutate(difference = (`1`-`0`))
+
+
+ggplot(df.2d.params , mapping = aes(x = `0`,
+                     y = difference, group = realpseudo, color = realpseudo)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + coord_equal()  + geom_smooth(method = "lm") + ylim(-3, 3) + xlim(-5, 5)+ coord_equal() + labs(x = "word difficulty with infinite presentation time", y = "difficullty difference between [fast - infinite]", title = "2d-model")
+
+ggplot(df.2d.params , mapping = aes(x = `0`,
+                     y = `1`, group = realpseudo, color = realpseudo)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + coord_equal() 
+
+ggplot(df.2d.params , mapping = aes(x = `0`,
+                     y = `1`)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + coord_equal() + xlim(-5, 5) + ylim(-5, 5) + geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed")+ labs(x = "word difficulty with infinite presentation time", y = "word difficulty with fast presentation time", title = "2d-model")
+```
+
+1, take item difficulty and theta with `0` condition 
+```{r}
+#coef(mirt_mod_2d, simplify = TRUE)
+scores_2d <- fscores(df.results.full.model.2d$model, method = "EAP", full.scores.SE = TRUE)
+```
+```{r}
+df_en <- as.tibble(scores_2d)
+
+cor(df_en$F1, df_en$F2)
+```
+
+```{r}
+var(df_en$F1)
+var(df_en$F2)
+```
+
+```{r}
+g.2d.en <- ggplot(df_en, aes(x = F1, y = F2)) +
+  geom_point() + stat_cor(method = "pearson", cor.coef.name = "r") + geom_smooth(method = "lm") + labs(title = "ROAR-Word: 2d-model")
+
+g.2d.en
+
+```
+
+analysis 1: add 2-d model 
+analysis 2: get the intercept (slope) and predict 
+add brazil data 
+
+```{r}
+df.corf.glmer.2 <- coef(model.2.glmer)$word %>% 
+  rownames_to_column(var = "word") %>% 
+  rename(word_difficulty = `(Intercept)`)
+
+ggplot(df.corf.glmer.2, mapping = aes(x = -word_difficulty,
+                     y = -fast_presentation)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + ylim(-0.5, 0.5) + xlim(-5, 5) + labs(x = "word difficulty with infinite presentation time", y = "how fast presentation changes performance for that word")
+```
+
+
+## Brazil
+```{r}
+df.resp.pt.full <- df.data.clean.pt %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "infinite", 0, 1)) %>%
+  mutate(word2 = paste0(word, "_",fast_presentation)) %>% 
+  arrange(word) %>% 
+  select(run_id, word2, correct) %>% 
+  pivot_wider(names_from = word2, values_from = correct) %>% 
+  arrange(run_id)
+
+mirt_model_1d_pt <- mirt(df.resp.pt.full %>% select(-run_id), 1, itemtype = 'Rasch', guess = 0.5, technical = list(NCYCLES = 5000))
+```
+
+### Unidimensional
+
+```{r}
+funct.get.params.full.pt <- function(df){
+  df.resp <- df %>% 
+    arrange(word, word2) %>% 
+    select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+  
+  mod <- mirt(df.resp %>% select(-run_id), 1, itemtype = 'Rasch', guess = 0.5, technical = list(NCYCLES = 10000))
+  
+  df.word.params <- data.frame(coef(mod, IRTpars = TRUE, simplify = TRUE)) %>%
+    rownames_to_column(var = "word2") 
+  
+  df.persons <- as.data.frame(fscores(mod, full.scores.SE = TRUE)) %>% 
+    add_column(run_id = df.resp$run_id) 
+  
+  tables_list <- list()
+  tables_list[['params']] <- df.word.params
+  tables_list[['persons']] <- df.persons
+  tables_list[['model']] <- mod
+  
+  return (tables_list)
+}
+
+df.results.full.model.pt <- funct.get.params.full.pt(df.data.pt.long)
+```
+
+```{r}
+df.unidimensional.pt <- df.results.full.model.pt$params %>% 
+  left_join(df.data.pt.long %>% 
+  select(word2, word, fast_presentation, realpseudo) %>% 
+  unique()) %>% 
+  select(word, fast_presentation, items.b, realpseudo) %>% 
+  pivot_wider(names_from = fast_presentation, values_from = items.b) %>% 
+  mutate(difference = `1` - `0`)
+```
+
+```{r}
+mean(df.unidimensional.pt$`0` - df.unidimensional.pt$`1`, na.rm = TRUE)
+sd(df.unidimensional.pt$`0` - df.unidimensional.pt$`1`, na.rm = TRUE)
+```
+
+```{r}
+r_val.pt <- cor(df.unidimensional.pt$`0`, df.unidimensional.pt$`1`, use = "complete.obs", method = "spearman")
+
+ct.pt <- cor.test(df.unidimensional.pt$`0`, df.unidimensional.pt$`1`)
+r_val.pt <- ct.pt$estimate
+p_val.pt <- ct.pt$p.value
+
+r_val.pt
+label.pt <- paste0(
+  "italic(r) == ", sprintf("%.2f", r_val.pt)
+)
+
+g.en.1d.param.1.pt <- ggplot(df.unidimensional.pt, aes(x = `0`, y = `1`)) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_smooth(method = 'lm') +
+  coord_equal() +
+  xlim(-6, 6) + 
+  ylim(-6, 6) +
+  geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") +
+  annotate("text", x = -5.5, y = 5.5, label = label.pt, hjust = 0, size = 5, parse = TRUE) +
+  labs(
+    x = "Word difficulty with infinite presentation time",
+    y = "Word difficulty with fast presentation time",
+    title = "Portuguese ROAR-Palavra"
+  )
+
+g.en.1d.param.1.pt
+```
+
+
+```{r}
+g.1d.param <- g.en.1d.param.1 + g.en.1d.param.1.pt
+
+ggsave("plots/roar_presentation_3_1d_param_compare.pdf", width = 8, height = 6, units = "in")
+
+```
+
+
+permutation test
+```{r}
+run_permutations.pt <- function(df, n_perm = 100, seed = 123) {
+  set.seed(seed)
+  n <- nrow(df)
+  
+  # Initialize storage for correlations and parameters
+  results_list <- list()
+  correlations <- numeric(n_perm)
+  
+  for (i in seq_len(n_perm)) {
+    
+    repeat {
+      # Step 1: Permute
+      df_perm <- df %>%
+  group_by(run_id) %>%
+  mutate(
+    n = n(),
+    fast_presentation = {
+      n_i <- first(n)  # scalar per group
+      sample(
+        c(rep(1, round(1/2 * n_i)),
+          rep(0, n_i - round(1/2 * n_i)))
+      )
+    }
+  ) %>%
+  ungroup() %>%
+  select(-n) %>%
+  mutate(word2 = paste0(word, "_", fast_presentation))
+      
+      
+      
+      # Step 2: Check for items with 100% accuracy (mirt handles this poorly)
+      bad_items <- df_perm %>%
+        group_by(word2) %>%
+        summarise(acc = mean(correct), .groups = "drop") %>%
+        filter(acc == 1)
+      
+      if (nrow(bad_items) == 0) break
+    }
+    
+    # Step 4: Run the Rasch model
+    params_list <- funct.get.params.full.perm(df_perm)
+    
+    # Filter out items with low observations
+    df.exclude <- df_perm %>% 
+      group_by(word2) %>% 
+      tally() %>% 
+      filter(n < 50)
+    
+    #print(df.exclude$word2)
+    
+    # Clean and pivot for correlation
+    hi <- params_list$params %>% 
+      left_join(df_perm %>% select(word2, word, fast_presentation) %>% unique(), by = "word2") %>% 
+      filter(!word2 %in% df.exclude$word2) %>%
+      select(word, fast_presentation, b) %>% 
+      pivot_wider(names_from = fast_presentation, values_from = b) 
+    
+    # Calculate and store correlation
+    current_cor <- cor(hi$`0`, hi$`1`, use = "complete.obs")
+    correlations[i] <- current_cor
+    
+    # Store the full results for this iteration
+    results_list[[i]] <- list(
+      iteration = i,
+      correlation = current_cor,
+      params = params_list$params
+    )
+    
+    message("Finished permutation ", i, " | Correlation: ", round(current_cor, 3))
+  }
+  
+  # Return a combined object
+  return(list(correlations = correlations, full_data = results_list))
+}
+
+# Run for 10 permutations
+output.pt <- run_permutations.pt(df.data.pt.long %>% select(run_id, word, correct, fast_presentation), n_perm = 100)
+```
+
+get confidence interval 
+```{r}
+perm_vector <- output.pt$correlations
+perm_vector <- unlist(perm_vector)
+
+null_interval <- quantile(perm_vector, probs = c(0.025, 0.975))
+
+print(null_interval)
+
+```
+
+
+```{r}
+g.en.1d.param.2 <- ggplot(df.unidimensional, mapping = aes(x = `0`,
+                     y = difference)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth() + ylim(-3, 3) + xlim(-5, 5)+ coord_equal() + labs(x = "Word difficulty with infinite presentation time", y = "Item difficulty difference: fast - infinite", title = "English ROAR-Word: 1d-model") + coord_equal()
+
+
+g.en.1d.param.2.pt <- ggplot(df.unidimensional.pt, mapping = aes(x = `0`,
+                     y = difference)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = 'lm') + ylim(-3, 3) + xlim(-5, 5)+ coord_equal() + labs(x = "Word difficulty with infinite presentation time", y = "Item difficulty difference: fast - infinite", title = "Portuguese ROAR-Palavra: 1d-model") + coord_equal()
+
+g.2.1d.params.diff <- g.en.1d.param.2 + g.en.1d.param.2.pt
+g.2.1d.params.diff
+
+#ggsave("plots/roar_presentation_4_1d_param_diff.pdf", width = 8, height = 6, units = "in")
+```
+
+##### compare thetas
+
+```{r}
+df.trials.combined.full.resp.with.fast.pt <- df.data.clean.pt %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "infinite", 0, 1)) %>%
+  mutate(word2 = paste0(word, "_",fast_presentation)) %>% 
+  mutate(correct = ifelse(fast_presentation == 0, NA, correct)) %>% 
+  select(run_id, word2, correct) %>% 
+  pivot_wider(names_from = word2, values_from = correct) %>% 
+  arrange(run_id)
+
+df.trials.combined.full.resp.with.slow.pt <- df.data.clean.pt %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "infinite", 0, 1)) %>%
+  mutate(word2 = paste0(word, "_",fast_presentation)) %>% 
+  mutate(correct = ifelse(fast_presentation == 1, NA, correct)) %>% 
+  select(run_id, word2, correct) %>% 
+  pivot_wider(names_from = word2, values_from = correct) %>% 
+  arrange(run_id)
+
+df.persons.model.fast.pt <- as.data.frame(fscores(df.results.full.model.pt$model, method = "ML",full.scores.SE = TRUE, response.pattern = df.trials.combined.full.resp.with.fast.pt %>% select(-run_id),max_theta = 6, min_theta = -6 )) %>% 
+    add_column(run_id = df.trials.combined.full.resp.with.fast.pt$run_id) 
+
+df.persons.model.slow.pt <- as.data.frame(fscores(df.results.full.model.pt$model, method = "ML", full.scores.SE = TRUE, response.pattern = df.trials.combined.full.resp.with.slow.pt %>% select(-run_id), max_theta = 6, min_theta = -6 )) %>% 
+    add_column(run_id = df.trials.combined.full.resp.with.slow.pt$run_id) 
+```
+
+```{r}
+df.person.theta.summary.pt<- df.data.clean.pt %>% 
+  select(run_id, user_grade) %>% 
+  unique() %>% 
+  arrange(run_id) %>% 
+  add_column(theta_fast = df.persons.model.fast.pt$F1) %>% 
+  add_column(theta_slow = df.persons.model.slow.pt$F1) %>% 
+  mutate(theta_diff = theta_slow - theta_fast) 
+  
+```
+
+```{r}
+ggplot(df.person.theta.summary.pt, mapping = aes(x = theta_slow,
+                     y = theta_fast)) + stat_cor(method = "pearson", cor.coef.name = "r") +  geom_point(alpha = 0.5, size =1)  + geom_smooth(method = 'lm') + coord_equal() + xlim(-6, 6) + ylim(-6, 6) + geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed")+ labs(x = "theta with infinite presentation time items", y = "theta with fast presentation time items", title = "ROAR-Palavra: 1d-model") + facet_wrap(~user_grade)
+```
+
+### 2d-dimensional
+```{r}
+Q_2d_pt <- cbind(
+  rep(1, 240),                # column 1: all 1s
+  rep(c(1, 0), length.out = 240)  # column 2: repeating 0,1,0,1,...
+)
+
+mirt_2d_model_pt <- mirt.model(Q_2d_pt)
+
+mirt_mod_2d_pt <- mirt(df.resp.pt.full[-1], model = mirt_2d_model_pt, itemtype = "Rasch", guess = 0.5, technical = list(NCYCLES = 1000))
+```
+
+```{r}
+extract.mirt(mirt_mod_2d_pt, 'nest')
+```
+```{r}
+extract.mirt(mirt_model_1d_pt, 'nest')
+```
+
+```{r}
+anova(mirt_model_1d_pt, mirt_mod_2d_pt)
+```
+```{r}
+lrt <- anova(
+  mirt_model_1d_pt, mirt_mod_2d_pt
+)
+lrt$p
+```
+
+```{r}
+#coef(mirt_mod_2d, simplify = TRUE)
+scores_2d_pt <- fscores(mirt_mod_2d_pt, method = "EAP")
+
+df_pt <- as.tibble(scores_2d_pt)
+
+cor(df_pt$F1, df_pt$F2)
+```
+
+```{r}
+var(df_pt$F1)
+
+var(df_pt$F2)
+```
+
+```{r}
+
+g.2d.en <- ggplot(df_en, aes(x = F1, y = F2)) +
+  geom_point() + stat_cor(method = "pearson", cor.coef.name = "r") + geom_smooth(method = "lm") + labs(title = "English ROAR-Word") + labs(x = "Theta from the word difficulty dimension", y = "Theta from the visual processing speed dimension") + xlim(-6, 6)  + ylim(-1, 1)
+
+g.2d.pt <- ggplot(df_pt, aes(x = F1, y = F2)) +
+  geom_point() + stat_cor(method = "pearson", cor.coef.name = "r") + geom_smooth(method = "lm") + labs(title = "Portuguese ROAR-Palavra") +
+  labs(x = "Theta from the word difficulty dimension", y = "Theta from the visual processing speed dimension") + xlim(-6, 6) # + ylim(-1, 1)
+
+g.2d.en + g.2d.pt 
+
+ggsave("plots/roar_presentation_5_2d_thetas.pdf", width = 8, height = 4, units = "in")
+```
+
+
+```{r}
+df.2d.params.pt <- as.tibble(coef(mirt_mod_2d_pt, simplify = TRUE)$items) %>% 
+  add_column(word2 = names(df.resp.pt.full[-1])) %>% 
+  left_join(df.pt.items) %>% 
+  mutate(d = -d) %>% 
+  select(word, realpseudo, fast_presentation, d) %>% 
+  pivot_wider(names_from = fast_presentation, values_from = d) %>% 
+  filter(!word %in% df.exclude$word) %>% 
+  mutate(difference = (`1`-`0`))
+
+
+ggplot(df.2d.params.pt , mapping = aes(x = `0`,
+                     y = difference)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + coord_equal()  + geom_smooth(method = "lm") + ylim(-3, 3) + xlim(-3, 3)+ coord_equal() + labs(x = "word difficulty with infinite presentation time", y = "difficullty difference between [fast - infinite]", title = "2d-model")
+
+
+ggplot(df.2d.params.pt , mapping = aes(x = `0`,
+                     y = `1`)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + coord_equal() +labs(x = "word difficulty with infinite presentation time", y = "word difficulty with fast presentation time", title = "2d-model")
+```
+
+## IMV: Out-of-sample testing? 
+
+```{r}
+funct.get.params.full.2d.train <- function(df, num_items){
+  Q_2d <- cbind(
+  rep(1, num_items),                # column 1: all 1s
+  rep(c(0, 1), length.out = num_items)  # column 2: repeating 0,1,0,1,...
+  )
+  
+  mirt_2d <- mirt.model(Q_2d)
+  
+  df.resp <- df %>% 
+    arrange(word, word2) %>% 
+    select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+  
+  mod <- mirt(df.resp[-1], model = mirt_2d, itemtype = "Rasch", guess = 0.5)
+  
+  df.word.params <- data.frame(coef(mod, simplify = TRUE)) %>%
+    rownames_to_column(var = "word2") 
+  
+  df.persons <- as.data.frame(fscores(mod, full.scores.SE = TRUE)) %>% 
+    add_column(run_id = df.resp$run_id) 
+  
+  tables_list <- list()
+  tables_list[['params']] <- df.word.params
+  tables_list[['persons']] <- df.persons
+  
+  return (tables_list)
+}
+```
+
+```{r}
+resp.pred <-function(b,th) {
+  k<-th-b
+  p<-0.5 + 0.5*(exp(k)/(1+exp(k)))
+  p
+}
+```
+
+```{r}
+resp.pred.2d <-function(a1, a2, b,th1, th2) {
+  k<-(a1*th1 + a2*th2 - b)
+  p<-0.5 + 0.5*(exp(k)/(1+exp(k)))
+  p
+}
+```
+
+cross validation test
+```{r}
+cv_imv <- function(df, K = 5) {
+  
+  set.seed(123)
+  
+  # balanced folds
+  df$group <- sample(rep(1:K, length.out = nrow(df)))
+  
+  imv_vals <- numeric(K)
+  
+  for (g in 1:K) {
+    print(g)
+    
+    # split
+    df.train <- df %>% filter(group != g)
+    df.test  <- df %>% filter(group == g)
+    
+    # remove degenerate items (train only)
+    df.items.exclude <- df.train %>% 
+      group_by(word, word2) %>% 
+      summarise(acc = mean(correct), .groups = "drop") %>% 
+      filter(acc == 1 | acc == 0)
+    
+    df.train <- df.train %>% filter(!word %in% df.items.exclude$word)
+    df.test  <- df.test  %>% filter(!word %in% df.items.exclude$word)
+    
+    # fit models
+    res.uni <- funct.get.params.full(df.train)
+    
+    hi <- df.train %>% 
+      arrange(word, word2) %>% 
+      select(run_id, word2, correct) %>% 
+      tidyr::pivot_wider(names_from = word2, values_from = correct)
+    
+    num_items <- ncol(hi) - 1
+    
+    res.multi <- funct.get.params.full.2d.train(df.train, num_items)
+    
+    # predictions
+    df.uni <- df.test %>% 
+      left_join(res.uni$persons, by = "run_id") %>% 
+      left_join(res.uni$params %>% select(word2, items.b), by = "word2") %>% 
+      mutate(pred = resp.pred(items.b, F1))
+    
+    df.multi <- df.test %>% 
+      left_join(res.multi$persons, by = "run_id") %>% 
+      left_join(res.multi$params %>% select(word2, items.a1, items.a2, items.d), by = "word2") %>% 
+      mutate(pred = resp.pred.2d(items.a1, items.a2, -items.d, F1, F2))
+    
+    # IMV
+    imv_vals[g] <- imv::imv.binary(
+      df.uni$correct,
+      df.uni$pred,
+      df.multi$pred
+    )
+  }
+  
+  list(
+    mean = mean(imv_vals, na.rm = TRUE),
+    sd   = sd(imv_vals, na.rm = TRUE),
+    fold_values = imv_vals
+  )
+}
+```
+
+### English 
+```{r}
+oos_imv_test_en <- cv_imv(df.trials.combined.full)
+
+```
+```{r}
+oos_imv_test_en 
+```
+
+### Brazil
+```{r}
+oos_imv_test_pt <- cv_imv(df.data.pt.long)
+```
+
+```{r}
+oos_imv_test_pt
+```
+
+# Q3: Exploratory analysis: predict fast response
+```{r}
+cv_imv_fast2slow <- function(df.word, df, K = 5) {
+  
+  
+  set.seed(123)
+  df.word$group <- sample(rep(1:K, length.out = nrow(df.word)))
+  
+  imv_vals <- numeric(K)
+  
+  for (g in 1:K) {
+    
+    # -----------------------
+    # Split
+    # -----------------------
+    df.train <- df.word %>% filter(group != g)
+    df.test  <- df.word %>% filter(group == g)
+    
+    # -----------------------
+    # Fit GAM (fast → slow)
+    # -----------------------
+    
+    
+    gam_mod <- mgcv::gam(slow ~ s(fast, k = 2), data = df.train %>% rename(fast = `1`, slow = `0`))
+    
+    # -----------------------
+    # Fit IRT models
+    # -----------------------
+    res.fast <- funct.get.params.full(
+      df %>% filter(fast_presentation == 1, word %in% df.train$word)
+    )
+    
+    res.slow <- funct.get.params.full(
+      df %>% filter(fast_presentation == 0, word %in% df.train$word)
+    )
+    
+    # -----------------------
+    # Test data (slow only)
+    # -----------------------
+    df.test.slow <- df %>% 
+      filter(fast_presentation == 0, word %in% df.test$word)
+    
+    # -----------------------
+    # Direct slow prediction (baseline)
+    # -----------------------
+    df.slow.pred <- df.test.slow %>% 
+      left_join(res.slow$persons, by = "run_id") %>%
+      left_join(df.test %>% select(word, `0`), by = "word") %>% 
+      rename(items.b = `0`) %>% 
+      mutate(pred.slow = resp.pred(items.b, F1))
+    
+    # -----------------------
+    # Fast → Slow transform
+    # -----------------------
+    df.fast.params <- df.test.slow %>% 
+       left_join(df.test %>% select(word, `1`), by = "word") %>% 
+      rename(items.b = `1`) 
+    
+    df.fast.pred <- df.fast.params %>% 
+      mutate(
+        b_slow = predict(
+          gam_mod,
+          newdata = data.frame(fast = items.b)
+        )
+      ) %>% 
+      left_join(res.fast$persons, by = "run_id") %>% 
+      mutate(pred.fast2slow = resp.pred(b_slow, F1))
+    
+    compare <- tibble(
+      resp = df.test.slow$correct,
+      transformed = df.fast.pred$pred.fast2slow,
+      slow = df.slow.pred$pred.slow
+    ) %>% drop_na()
+    
+    # -----------------------
+    # IMV
+    # -----------------------
+    imv_vals[g] <- imv::imv.binary(
+      compare$resp,
+      compare$transformed,  # transformed
+      compare$slow        # baseline
+    )
+
+  }
+  
+  list(
+    mean = mean(imv_vals, na.rm = TRUE),
+    sd   = sd(imv_vals, na.rm = TRUE),
+    folds = imv_vals
+  )
+}
+```
+
+```{r}
+cv_imv_fast2slow_linear <- function(df.word, df, K = 5) {
+  
+  
+  set.seed(123)
+  df.word$group <- sample(rep(1:K, length.out = nrow(df.word)))
+  
+  imv_vals <- numeric(K)
+  
+  for (g in 1:K) {
+    
+    # -----------------------
+    # Split
+    # -----------------------
+    df.train <- df.word %>% filter(group != g)
+    df.test  <- df.word %>% filter(group == g)
+    
+    # -----------------------
+    # Fit GAM (fast → slow)
+    # -----------------------
+    
+    lm_mod <- lm(slow ~ fast, data = df.train %>% rename(fast = `1`, slow = `0`))
+    #gam_mod <- mgcv::gam(slow ~ s(fast, k = 2), data = df.train %>% rename(fast = `1`, slow = `0`))
+    
+    # -----------------------
+    # Fit IRT models
+    # -----------------------
+    res.fast <- funct.get.params.full(
+      df %>% filter(fast_presentation == 1, word %in% df.train$word)
+    )
+    
+    res.slow <- funct.get.params.full(
+      df %>% filter(fast_presentation == 0, word %in% df.train$word)
+    )
+    
+    # -----------------------
+    # Test data (slow only)
+    # -----------------------
+    df.test.slow <- df %>% 
+      filter(fast_presentation == 0, word %in% df.test$word)
+    
+    # -----------------------
+    # Direct slow prediction (baseline)
+    # -----------------------
+    df.slow.pred <- df.test.slow %>% 
+      left_join(res.slow$persons, by = "run_id") %>%
+      left_join(df.test %>% select(word, `0`), by = "word") %>% 
+      rename(items.b = `0`) %>% 
+      mutate(pred.slow = resp.pred(items.b, F1))
+    
+    # -----------------------
+    # Fast → Slow transform
+    # -----------------------
+    df.fast.params <- df.test.slow %>% 
+       left_join(df.test %>% select(word, `1`), by = "word") %>% 
+      rename(items.b = `1`) 
+    
+    df.fast.pred <- df.fast.params %>% 
+      mutate(
+        b_slow = predict(
+          lm_mod,
+          newdata = data.frame(fast = items.b)
+        )
+      ) %>% 
+      left_join(res.fast$persons, by = "run_id") %>% 
+      mutate(pred.fast2slow = resp.pred(b_slow, F1))
+    
+    compare <- tibble(
+      resp = df.test.slow$correct,
+      transformed = df.fast.pred$pred.fast2slow,
+      slow = df.slow.pred$pred.slow
+    ) %>% drop_na()
+    
+    # -----------------------
+    # IMV
+    # -----------------------
+    imv_vals[g] <- imv::imv.binary(
+      compare$resp,
+      compare$transformed,  # transformed
+      compare$slow        # baseline
+    )
+
+  }
+  
+  list(
+    mean = mean(imv_vals, na.rm = TRUE),
+    sd   = sd(imv_vals, na.rm = TRUE),
+    folds = imv_vals
+  )
+}
+```
+```{r}
+set.seed(123)
+cv_imv_fast2slow_constant <- function(df.word, df, constant, K = 5) {
+  
+  df.word$group <- sample(rep(1:K, length.out = nrow(df.word)))
+  
+  imv_vals <- numeric(K)
+  
+  for (g in 1:K) {
+    
+    # -----------------------
+    # Split
+    # -----------------------
+    df.train <- df.word %>% filter(group != g)
+    df.test  <- df.word %>% filter(group == g)
+    
+    # -----------------------
+    # Fit GAM (fast → slow)
+    # -----------------------
+    
+    #lm_mod <- lm(slow ~ fast, data = df.train %>% rename(fast = `1`, slow = `0`))
+    #gam_mod <- mgcv::gam(slow ~ s(fast, k = 2), data = df.train %>% rename(fast = `1`, slow = `0`))
+    
+    # -----------------------
+    # Fit IRT models
+    # -----------------------
+    res.fast <- funct.get.params.full(
+      df %>% filter(fast_presentation == 1, word %in% df.train$word)
+    )
+    
+    res.slow <- funct.get.params.full(
+      df %>% filter(fast_presentation == 0, word %in% df.train$word)
+    )
+    
+    # -----------------------
+    # Test data (slow only)
+    # -----------------------
+    df.test.slow <- df %>% 
+      filter(fast_presentation == 0, word %in% df.test$word)
+    
+    # -----------------------
+    # Direct slow prediction (baseline)
+    # -----------------------
+    df.slow.pred <- df.test.slow %>% 
+      left_join(res.slow$persons, by = "run_id") %>%
+      left_join(df.test %>% select(word, `0`), by = "word") %>% 
+      rename(items.b = `0`) %>% 
+      mutate(pred.slow = resp.pred(items.b, F1))
+    
+    # -----------------------
+    # Fast → Slow transform
+    # -----------------------
+    df.fast.params <- df.test.slow %>% 
+       left_join(df.test %>% select(word, `1`), by = "word") %>% 
+      rename(items.b = `1`) 
+    
+    df.fast.pred <- df.fast.params %>% 
+      mutate(
+        b_slow =  items.b + constant
+      ) %>% 
+      left_join(res.fast$persons, by = "run_id") %>% 
+      mutate(pred.fast2slow = resp.pred(b_slow, F1))
+    
+    compare <- tibble(
+      resp = df.test.slow$correct,
+      transformed = df.fast.pred$pred.fast2slow,
+      slow = df.slow.pred$pred.slow
+    ) %>% drop_na()
+    
+    # -----------------------
+    # IMV
+    # -----------------------
+    imv_vals[g] <- imv::imv.binary(
+      compare$resp,
+      compare$transformed,  # transformed
+      compare$slow        # baseline
+    )
+
+  }
+  
+  list(
+    mean = mean(imv_vals, na.rm = TRUE),
+    sd   = sd(imv_vals, na.rm = TRUE),
+    folds = imv_vals
+  )
+}
+```
+
+## English
+```{r}
+oos_imv_fast2slow_en <-cv_imv_fast2slow(df.unidimensional, df.trials.combined.full)
+```
+
+```{r}
+oos_imv_fast2slow_en
+```
+```{r}
+oos_imv_fast2slow_en_linear <-cv_imv_fast2slow_linear(df.unidimensional, df.trials.combined.full)
+```
+```{r}
+oos_imv_fast2slow_en_linear
+```
+
+```{r}
+oos_imv_fast2slow_en_constant <-cv_imv_fast2slow_constant(df.unidimensional, df.trials.combined.full, -0.3)
+```
+```{r}
+oos_imv_fast2slow_en_constant
+```
+```{r}
+oos_imv_fast2slow_en_baseline <-cv_imv_fast2slow_constant(df.unidimensional, df.trials.combined.full, 0)
+oos_imv_fast2slow_en_baseline
+```
+
+
+```{r}
+lm_mod <- lm(slow ~ fast, data = df.unidimensional %>% rename(fast = `1`, slow = `0`))
+summary(lm_mod)
+
+df.plot <- df.unidimensional %>% 
+  rename(fast = `1`, slow = `0`)
+
+ggplot(df.plot, aes(x = fast, y = slow)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fast", y = "Slow",
+       title = "Observed vs. linear fit (with identity line)") +
+  theme_minimal()
+```
+
+## Brazil 
+```{r}
+oos_imv_fast2slow_pt <- cv_imv_fast2slow(df.unidimensional.pt, df.data.pt.long)
+```
+```{r}
+oos_imv_fast2slow_pt
+```
+```{r}
+oos_imv_fast2slow_pt_linear <- cv_imv_fast2slow_linear(df.unidimensional.pt, df.data.pt.long)
+oos_imv_fast2slow_pt_linear
+```
+
+```{r}
+oos_imv_fast2slow_pt_constant <-cv_imv_fast2slow_constant(df.unidimensional.pt, df.data.pt.long, -1.2)
+oos_imv_fast2slow_pt_constant
+```
+```{r}
+oos_imv_fast2slow_pt_baseline <-cv_imv_fast2slow_constant(df.unidimensional.pt, df.data.pt.long, 0)
+oos_imv_fast2slow_pt_baseline
+```
+
+```{r}
+lm_mod <- lm(slow ~ fast, data = df.unidimensional.pt %>% rename(fast = `1`, slow = `0`))
+summary(lm_mod)
+
+df.plot <- df.unidimensional.pt %>% 
+  rename(fast = `1`, slow = `0`)
+
+ggplot(df.plot, aes(x = fast, y = slow)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fast", y = "Slow",
+       title = "Observed vs. linear fit (with identity line)") +
+  theme_minimal()
+```
+
+
+# Archive
+### English.Word
+
+
+Hypothesis: 
+word recognition: complexity of word vs. speed of stimulus 
+in a 2nd dimension: 
+Question: is word recognition speed independent from word complexity 
+
+```{r}
+df.data.clean.update <- df.data.clean %>% 
+  mutate(
+    stimulus_presentation_time_numeric= case_when(
+      stimulus_presentation_time == 'T1' ~ log(80),
+      stimulus_presentation_time == 'T2' ~ log(160),
+      stimulus_presentation_time == 'T3' ~ log(350),
+      stimulus_presentation_time == 'T4' ~ log(700),
+      TRUE ~ log(5000)  # default catch-all
+    )) %>% filter(age_group != "adult")
+```
+
+
+rescale the parameters 
+```{r}
+df.data.clean.update$difficulty_z <- scale(df.data.clean.update$difficulty, center = TRUE, scale = TRUE)
+df.data.clean.update$stimulus_presentation_time_numeric_z <- scale(df.data.clean.update$stimulus_presentation_time_numeric, center = TRUE, scale = TRUE)
+```
+```{r}
+hist(df.data.clean.update$difficulty_z)
+hist(df.data.clean.update$stimulus_presentation_time_numeric_z)
+```
+
+```{r}
+model.1.glmer.train <- glmer(correct ~0  + (1 | run_id) + (1 + fast_presentation | word), data = df.trials.combined.full.grouped.train , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+```
+
+```{r}
+model.0.glmer.train <- glmer(correct ~ 0 + fast_presentation * difficulty + (1 | run_id), data = df.trials.combined.full.grouped.train, family = binomial, control = glmerControl(optimizer = "bobyqa"))
+```
+-
+```{r}
+pred.glmer.test <- predict(model.1.glmer.train, df.trials.combined.full.grouped.test, type = "response")
+```
+
+```{r}
+imv::imv.binary(df.unidimensional.model.group$correct, pred.glmer.test, df.unidimensional.model.group$pred.resp)
+```
+
+```{r}
+cor(pred.glmer.test, df.unidimensional.model.group$pred.resp)
+```
+
+```{r}
+plot(pred.glmer.test, df.unidimensional.model.group$pred.resp)
+```
+
+## others
+```{r}
+model.2.glmer <- glmer(correct ~ stimulus_presentation_time_numeric_z * difficulty_z+ (1 +  difficulty_z | run_id), data = df.data.clean.update , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+
+summary(model.2.glmer)
+```
+```{r}
+hsl |>
+ filter(!is.na(X3TGPAWGT) & !is.na(S1SMUSEUM) & !is.na(X1LOCALE)) |>
+ ggplot() +
+ geom_boxplot(aes(
+   y = X3TGPAWGT,
+   x = factor(X1LOCALE),
+   fill = factor(S1SMUSEUM)
+ )) +
+ labs(
+   title = "Never attending musea \nis related to lower GPAs across locales",
+   subtitle = "In cities, the relationship between museum attendance and GPA is most pronounced",
+   y = "Weighted GPA",
+   x = "Locale",
+   fill = "Museum Attendance",
+   caption = "Source: HSL 2009-2013 \nN = 19,738"
+ ) +
+ scale_fill_manual(
+   values = c("#8c15153c", "#8c151563", "#8c1515c5", "#8C1515"),
+   labels = c("Never", "Rarely", "Sometimes", "Often")
+ ) +
+ scale_x_discrete(labels = c("City", "Suburb", "Town", "Rural")) +
+ theme_minimal() +
+ theme(
+   plot.title = element_text(size = 18, color = "#2E2D29"),
+   axis.title.y = element_text(color = "#2E2D29"),
+   axis.title.x = element_text(color = "#2E2D29")
+ )
+
+```
+
+
+```{r}
+model.3.glmer <- glmer(correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 + difficulty_z * stimulus_presentation_time_numeric_z| run_id), data = df.data.clean.update , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+
+summary(model.3.glmer)
+```
+
+```{r}
+anova(model.0.glmer.baseline, model.1.glmer, model.2.glmer, model.3.glmer)
+```
+## cross validation
+```{r}
+library(lme4)
+library(caret)
+library(dplyr)
+
+cv_glmer <- function(data, formula, outcome, k = 5, family_type = binomial, seed = 123) {
+  
+  shuffled_indices <- sample(nrow(data))
+  data <- data[shuffled_indices, ]
+  
+  set.seed(seed)
+  
+  if (!outcome %in% names(data)) stop("Outcome variable not found in dataset!")
+  
+  y <- data[[outcome]]
+  if (length(unique(y)) < 2) stop("Outcome variable must have at least 2 unique values!")
+  
+  folds <- caret::createFolds(y, k = k)
+  
+  if(length(folds) == 0) stop("No folds were created! Check the outcome variable.")
+  
+  results <- data.frame(Fold = 1:k, Accuracy = NA)
+  
+  for (i in 1:k) {
+    test_idx <- folds[[i]]
+    train_data <- data[-test_idx, ]
+    test_data  <- data[test_idx, ]
+    
+    # Fit GLMM
+    model <- lme4::glmer(formula, data = train_data, family = family_type)
+    
+    # Predict probabilities
+    test_data$pred_prob <- predict(model, newdata = test_data, type = "response")
+    
+    # Stochastic prediction: flip a biased coin for each observation
+    test_data$pred_class <- rbinom(n = nrow(test_data), size = 1, prob = test_data$pred_prob)
+    
+    # Accuracy
+    results$Accuracy[i] <- mean(test_data$pred_class == test_data[[outcome]], na.rm = TRUE)
+    print(results$Accuracy[i])
+  }
+  
+  mean_acc <- mean(results$Accuracy)
+  list(per_fold = results, mean_accuracy = mean_acc)
+  return(mean_acc)
+}
+```
+
+```{r}
+
+formula.1 <- correct ~ stimulus_presentation_time_numeric_z * difficulty_z +  (1 | run_id)
+
+cv_results.1 <- cv_glmer(
+  data = df.data.clean.update,
+  formula = formula.1,
+  outcome = "correct",
+  k = 5,
+  family_type = binomial
+) 
+
+print(cv_results.1)
+
+```
+```{r}
+formula.2 <- correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 + difficulty_z | run_id)
+
+cv_results.2 <- cv_glmer(
+  data = df.data.clean.update,
+  formula = formula.2,
+  outcome = "correct",
+  k = 5,
+  family_type = binomial
+) 
+
+print(cv_results.2)
+```
+```{r}
+formula.1 <- correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 + stimulus_presentation_time_numeric_z | run_id)
+
+cv_results.1 <- cv_glmer(
+  data = df.data.clean.update,
+  formula = formula.1,
+  outcome = "correct",
+  k = 5,
+  family_type = binomial
+) 
+
+print(cv_results.1)
+
+```
+```{r}
+formula.0.a <- correct ~ stimulus_presentation_time_numeric_z + difficulty_z + (1 | run_id)
+
+cv_results.0.a <- cv_glmer(
+  data = df.data.clean.update,
+  formula = formula.0.a,
+  outcome = "correct",
+  k = 5,
+  family_type = binomial
+) 
+
+print(cv_results.0.a)
+```
+
+
+
+
+```{r}
+df.pt.params.difficulty <- df.pt.T3.only %>% 
+  select(runId, stimulusPresentationTime, word2, correct,word, realpseudo) %>% 
+  group_by(word, realpseudo) %>% 
+  tally() %>% 
+  arrange(word) %>% 
+  add_column(difficulty = params.pt)
+```
+
+```{r}
+df.data.pt.update <- df.data.pt %>% 
+  select(-difficulty) %>% 
+  left_join(df.pt.params.difficulty) %>% 
+  mutate(
+    stimulus_presentation_time_numeric= case_when(
+      stimulusPresentationTime == 'T3' ~ log(350),
+      TRUE ~ log(5000)  # default catch-all
+    ))
+```
+
+rescale the parameters 
+```{r}
+# df.data.pt.update$difficulty <- df.data.pt.update$difficulty - mean(df.data.pt.update$difficulty, na.rm = TRUE)
+# df.data.pt.update$stimulus_presentation_time_numeric <- df.data.pt.update$stimulus_presentation_time_numeric - mean(df.data.pt.update$stimulus_presentation_time_numeric, na.rm = TRUE)
+
+df.data.pt.update$difficulty_z <- scale(df.data.pt.update$difficulty, center = TRUE, scale = TRUE)
+df.data.pt.update$stimulus_presentation_time_numeric_z <- scale(df.data.pt.update$stimulus_presentation_time_numeric, center = TRUE, scale = TRUE)
+```
+
+```{r}
+model.0.glmer.baseline.pt <- glmer(correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 | runId), data = df.data.pt.update , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+
+summary(model.0.glmer.baseline.pt)
+```
+
+```{r}
+model.1.glmer.pt <- glmer(correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 + stimulus_presentation_time_numeric_z | runId), data = df.data.pt.update , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+
+summary(model.1.glmer.pt)
+```
+```{r}
+model.1b.glmer.pt <- glmer(correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 + difficulty_z | runId), data = df.data.pt.update , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+
+summary(model.1b.glmer.pt)
+
+
+```
+
+
+
+```{r}
+model.2.glmer.pt <- glmer(correct ~ stimulus_presentation_time_numeric_z * difficulty_z + (1 + stimulus_presentation_time_numeric_z * difficulty_z | runId), data = df.data.pt.update , family = binomial, control = glmerControl(optimizer = "bobyqa"))
+
+summary(model.2.glmer.pt)
+```
+```{r}
+anova(model.0.glmer.baseline.pt, model.1.glmer.pt)
+```
+```{r}
+anova(model.1.glmer.pt, model.2.glmer.pt)
+```
+
+
+```{r}
+formula.0.a.brazil <- correct ~ stimulus_presentation_time_numeric_z + difficulty_z + (1 | runId)
+
+cv_results.0.a.brazil <- cv_glmer(
+  data = df.data.pt.update,
+  formula = formula.0.a.brazil,
+  outcome = "correct",
+  k = 5,
+  family_type = binomial
+) 
+
+print(cv_results.0.a.brazil)
+```
+```{r}
+formula.2.brazil <- correct ~ stimulus_presentation_time_numeric_z + (1 | runId)
+
+cv_results.2.brazil <- cv_glmer(
+  data = df.data.pt.update,
+  formula = formula.2.brazil,
+  outcome = "correct",
+  k = 5,
+  family_type = binomial
+) 
+
+print(cv_results.2.brazil)
+```
+
+
+## Other 
+
+```{r}
+model.0.glmer.baseline <-glmer(correct ~ stimulus_presentation_time_numeric * difficulty + (1 + stimulus_presentation_time_numeric * difficulty | run_id) , data = df.data.clean.update %>% filter(age_group != "adult"), family = binomial, control = glmerControl(optimizer = "bobyqa"))
+```
+
+```{r}
+model.0.glmer <- glmer(formula = correct ~ (1 | run_id) + difficulty + stimulus_presentation_time_numeric, data = df.data.clean.update %>% filter(age_group != "adult"), family = "binomial")
+```
+
+```{r}
+summary(model.0.glmer)
+```
+```{r}
+summary()
+```
+
+```{r}
+model.1.glmer <- glmer(formula = correct ~ (1 | run_id) + (1 + stimulus_presentation_time_numeric | difficulty), data = df.data.clean.update %>% filter(age_group != "adult"), family = "binomial")
+```
+```{r}
+summary(model.1.glmer)
+```
+```{r}
+model.2.glmer <- glmer(formula = correct ~ (1 | run_id) + difficulty + stimulus_presentation_time_numeric +(1 + stimulus_presentation_time_numeric | difficulty), data = df.data.clean.update %>% filter(age_group != "adult"), family = "binomial")
+```
+```{r}
+summary(model.2.glmer)
+```
+
+```{r}
+model.1.glmer <- glmer(formula = correct ~ -1 + (1 | word) + (1 + stimulus_presentation_time | run_id) + stimulus_presentation_time, data = df.data.clean %>% filter(age_group != "adult"), family = "binomial")
+```
+
+```{r}
+model.2.glmer <- glmer(formula = correct ~  (1 | word) + stimulus_presentation_time, data = df.data.clean %>% filter(age_group != "adult"), family = "binomial")
+```
+```{r}
+summary(model.2.glmer)
+```
+
+
+
+All fixed effects are highly significant (p < 2e-16), suggesting strong evidence that stimulus_presentation_time is a meaningful predictor of task accuracy.
+
+
+## RQ2: Do item diffculty vary by presentation time?
+```{r}
+df.item.statistics <- df.data.clean %>% 
+  filter(stimulus_presentation_time != "T4", age_group == "family") %>% 
+  group_by(realpseudo, word, stimulus_presentation_time) %>% 
+  dplyr :: summarise(F1 = mean(correct), SE_F1 = sd(correct)/sqrt(n()))
+
+set1 <- df.item.statistics %>% 
+  filter(stimulus_presentation_time == "T5")
+
+set2 <- df.item.statistics %>% 
+  filter(stimulus_presentation_time == "T3")
+
+# Step 1: Calculate observed correlation between F1 columns in each set
+observed_cor <- cor(set1$F1, set2$F1, method = "spearman")
+
+print(observed_cor)
+# Step 2: Calculate reliability for each set using F1 and SE_F1
+# Reliability for set1
+observed_variance_set1 <- var(set1$F1)
+reliability_set1 <- (observed_variance_set1 - sum(set1$SE_F1^2) / nrow(set1)) / observed_variance_set1
+
+# Reliability for set2
+observed_variance_set2 <- var(set2$F1)
+reliability_set2 <- (observed_variance_set2 - sum(set2$SE_F1^2) / nrow(set2)) / observed_variance_set2
+
+# Step 3: Disattenuate the correlation
+disattenuated_cor <- observed_cor / sqrt(reliability_set1 * reliability_set2)
+
+# Display the disattenuated correlation
+disattenuated_cor
+```
+
+```{r}
+ggplot(df.combined.summary.word.wide.F1 , mapping = aes(x = T1,
+                     y = T5, color = realpseudo)) + stat_cor() + geom_point() + geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + geom_smooth(method = "lm") + xlim(-5, 5) + ylim(-5, 5) + coord_equal()
+```
+
+
+- TODO: different ways multi-dimensional analysis 
+confirmatory model 
+
+## RQ3: Dimensionality Test
+
+```{r}
+df.trials.clean.dev <- df.data.clean %>% 
+  #filter(age_group != "adult") %>% 
+  filter(stimulus_presentation_time != "T4") %>% 
+  mutate(fast_presentation = ifelse(stimulus_presentation_time == "T5", 0, 1))
+
+df.items.exclude <- df.trials.clean.dev %>% 
+  filter(rt < 5000, rt > 200) %>% 
+  group_by(stimulus_presentation_time, word) %>% 
+  summarise(acc = mean(correct)) %>% 
+  filter(acc == 1 | acc == 0)
+
+```
+
+
+```{r}
+df.trials.combined <- df.trials.clean.dev %>% 
+  select(run_id, age_group, fast_presentation, word, realpseudo, stimulus_presentation_time, correct, rt) %>% 
+  #mutate(word2 = paste0(word, "_", fast_presentation)) %>% 
+  filter(!word %in% df.items.exclude$word) %>% 
+  arrange(fast_presentation, word) %>% 
+  filter(rt < 5000, rt > 200)
+  #select(run_id, word2, correct) #%>%
+  #pivot_wider(names_from = word2, values_from = correct)
+```
+
+
+### treating as multiple dimensions
+
+```{r}
+df.trials.combined.full <- df.trials.combined %>% 
+  mutate(word2 = paste0(word, "_", fast_presentation)) %>% 
+  arrange(fast_presentation, word) 
+
+```
+
+```{r}
+funct.get.params <- function(df, condition){
+  print(condition)
+  df.resp <- df %>% 
+    filter(stimulus_presentation_time == condition) %>% 
+    select(run_id, word, correct) %>% 
+    pivot_wider(names_from = word, values_from = correct) %>% 
+    arrange(run_id)
+  
+  mod <- mirt(df.resp %>% select(-run_id), 1, itemtype = '1PL', guess = 0.5)
+  
+  df.word.params <- data.frame(coef(mod, IRTpars = TRUE, simplify = TRUE)) %>%
+    rownames_to_column(var = "word") %>%
+    mutate(stimulus_presentation_time = condition)
+  
+  df.persons <- as.data.frame(fscores(mod, full.scores.SE = TRUE)) %>% 
+    add_column(run_id = df.resp$run_id) %>% 
+    mutate(stimulus_presentation_time = condition)
+  
+  tables_list <- list()
+  tables_list[['params']] <- df.word.params
+  tables_list[['persons']] <- df.persons
+  
+  return (tables_list)
+}
+```
+
+```{r}
+df.results.T1 <- funct.get.params(df.trials.combined, "T1")
+df.results.T2 <- funct.get.params(df.trials.combined, "T2")
+df.results.T3 <- funct.get.params(df.trials.combined, "T3")
+df.results.T5 <- funct.get.params(df.trials.combined, "T5")
+```
+
+```{r}
+df.word.params.combined <- df.results.T1$params %>% 
+  rbind(df.results.T2$params) %>% 
+  rbind(df.results.T3$params) %>% 
+  rbind(df.results.T5$params) %>% 
+  left_join(df.items)
+
+df.combined.summary.word.wide.F1 <- df.word.params.combined %>% 
+  select(word, stimulus_presentation_time, items.b, realpseudo) %>% 
+  pivot_wider(names_from = stimulus_presentation_time, values_from = items.b) 
+
+ggpairs(df.combined.summary.word.wide.F1, columns = c("T1", "T2", "T3", "T5"),alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Pairwise Correlations")
+```
+
+### Unidimensional
+
+```{r}
+funct.get.params.full <- function(df){
+  df.resp <- df %>% 
+    select(run_id, word2, correct) %>% 
+    pivot_wider(names_from = word2, values_from = correct) %>% 
+    arrange(run_id)
+  
+  mod <- mirt(df.resp %>% select(-run_id), 1, itemtype = '1PL', guess = 0.5, technical = list(NCYCLES = 5000))
+  
+  df.word.params <- data.frame(coef(mod, IRTpars = TRUE, simplify = TRUE)) %>%
+    rownames_to_column(var = "word2") 
+  
+  df.persons <- as.data.frame(fscores(mod, full.scores.SE = TRUE)) %>% 
+    add_column(run_id = df.resp$run_id) 
+  
+  tables_list <- list()
+  tables_list[['params']] <- df.word.params
+  tables_list[['persons']] <- df.persons
+  
+  return (tables_list)
+}
+
+df.results.full.model <- funct.get.params.full(df.trials.combined.full)
+```
+
+```{r}
+df.exclude <- df.trials.combined.full %>% 
+  group_by(word2, word, fast_presentation) %>% 
+  tally() %>% 
+  filter(n < 50)
+```
+
+```{r}
+df.unidimensional<- df.results.full.model$params %>% 
+  left_join(df.trials.combined.full %>% 
+  select(word2, word, fast_presentation, realpseudo) %>% 
+  unique()) %>% 
+  select(word, fast_presentation, items.b, realpseudo) %>% 
+  pivot_wider(names_from = fast_presentation, values_from = items.b) %>% 
+  filter(!word %in% df.exclude$word)
+```
+```{r}
+ggplot(df.unidimensional, mapping = aes(x = `0`,
+                     y = `1`, group = realpseudo, color = realpseudo)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1)  + geom_smooth(method = "lm") + ylim(-5, 5) + xlim(-5, 5)+ geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + coord_equal() + labs(x = "infinite presentation time", y = "fast presentation time")
+```
+```{r}
+
+```
+
+## out-of-sample 
+
+
+```{r}
+assign_groups <- function(df) {
+  df <- df[sample(nrow(df)), ]              # shuffle
+  df$group <- sample(1:5, nrow(df), TRUE)   # assign groups 1-5
+  df
+}
+
+df.trials.combined.full.grouped <- assign_groups(df.trials.combined.full)
+```
+
+
+```{r}
+df.items.exclude <- df.trials.combined.full.grouped %>% 
+  filter(group !=5) %>% 
+  group_by(word, word2) %>% 
+  summarise(acc = mean(correct)) %>% 
+  filter(acc == 1 | acc == 0)
+```
+```{r}
+df.trials.combined.full.grouped.train <- df.trials.combined.full.grouped %>% filter(group !=5) %>% 
+  filter(!word %in%df.items.exclude$word )
+
+df.trials.combined.full.grouped.test <- df.trials.combined.full.grouped %>% filter(group ==5) %>% 
+  filter(!word %in%df.items.exclude$word )
+```
+
+```{r}
+df.results.full.model.grouped.train <- funct.get.params.full(df.trials.combined.full.grouped.train)
+```
+
+```{r}
+df.results.full.model.grouped.train$params
+```
+```{r}
+resp.pred <-function(b,th) {
+  k<-th-b
+  p<-0.5 + 0.5*(exp(k)/(1+exp(k)))
+  p
+}
+```
+
+
+```{r}
+df.unidimensional.model.group <- df.trials.combined.full.grouped.test %>% 
+  left_join(df.results.full.model.grouped.train$persons) %>% 
+  left_join(df.results.full.model.grouped.train$params %>% select(word2, items.b)) %>% 
+  mutate(pred.resp = resp.pred(items.b, F1))
+  
+```
+```{r}
+gl1 <- glmer(correct ~ 0 + (1 | word) + (1|run_id), data=df.trials.combined.full.grouped.train, family = "binomial")
+```
+```{r}
+gl2 
+```
+
+
+change word from fixed model to random effect, use glmer 
+```{r}
+m1 = lmer(correct ~ 0 + word + (1|run_id), data=df.trials.combined.full.grouped.train)
+```
+```{r}
+m3 = lmer(correct ~ 0 + word + (1 + fast_presentation|run_id), data= df.trials.combined.full.grouped.train)
+```
+```{r}
+m2 = lmer(correct ~ 0 + word + fast_presentation + (1|run_id), data=df.trials.combined.full.grouped.train)
+```
+```{r}
+df.trials.combined.full.grouped.train %>% left_join(df.data.clean.update %>% 
+  select(word, difficulty))
+```
+
+```{r}
+gm1 = glmer(correct ~ 0 + (1 + fast_presentation | word) + (1|run_id), data=df.trials.combined.full.grouped.train, family = binomial)
+```
+
+```{r}
+gm3 = glmer(correct ~ 0 + word + (1 + fast_presentation|run_id), data= df.trials.combined.full.grouped.train, family = binomial)
+```
+```{r}
+gm2 = glmer(correct ~ 0 + word + fast_presentation + (1|run_id), data=df.trials.combined.full.grouped.train, family = binomial)
+```
+
+
+```{r}
+pred.m1 <- predict(m1,df.trials.combined.full.grouped.test )
+pred.m2 <- predict(m2,df.trials.combined.full.grouped.test )
+pred.m3 <- predict(m3,df.trials.combined.full.grouped.test )
+
+```
+```{r}
+imv::imv.binary(df.trials.combined.full.grouped.test$correct, pred.m1, pred.m2)
+imv::imv.binary(df.trials.combined.full.grouped.test$correct, pred.m1, pred.m3)
+imv::imv.binary(df.trials.combined.full.grouped.test$correct, pred.m2, pred.m3)
+```
+
+```{r}
+imv::imv.binary(df.trials.combined.full.grouped.test$correct, pred.m2, df.unidimensional.model.group$pred.resp)
+```
+
+
+```{r}
+anova(m1, m2)
+```
+```{r}
+anova(m2, m3)
+```
+
+```{r}
+imv::imv.binary(df.trials.combined.full$correct, predict(m1), predict(m2))
+imv::imv.binary(df.trials.combined.full$correct, predict(m1), predict(m3))
+imv::imv.binary(df.trials.combined.full$correct, predict(m2), predict(m3))
+```
+```{r}
+plot(pred.m2, df.unidimensional.model.group$pred.resp)
+```
+
+
+### Item level: unidimensional vs. multidimensional 
+```{r}
+df.trials.combined.full %>% 
+  group_by(word2) %>% 
+  tally()
+```
+
+```{r}
+df.word.params.summary <- df.word.params.combined %>% 
+  mutate(word2 = paste0(word, "_", stimulus_presentation_time)) %>% 
+  rename(b.multi = items.b, b.original = b) %>% 
+  select(word, stimulus_presentation_time, word2, realpseudo, b.multi, b.original) %>% 
+  left_join(df.results.full.model$params %>% select(word2, items.b) %>% rename(b.uni = items.b)) %>% 
+  filter(!is.na(b.original))
+```
+```{r}
+df.word.fast.slow.compare <- df.word.params.summary %>% 
+  select(word, stimulus_presentation_time, realpseudo, b.uni) %>% 
+  filter(stimulus_presentation_time %in% c('T3', 'T5')) %>% 
+  pivot_wider(names_from = stimulus_presentation_time, values_from = b.uni) %>% 
+  mutate(difference = T3-T5)
+
+df.word.fast.slow.compare %>% 
+  arrange(difference)
+
+ggplot(df.word.fast.slow.compare %>% arrange(T3), mapping = aes(x = T3,
+                     y = difference, group = realpseudo, color = realpseudo))  + geom_point(size = 0.01) + geom_smooth() + theme(legend.position = "bottom") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+```{r}
+cor(df.word.fast.slow.compare$T3, df.word.fast.slow.compare$T5)
+```
+
+```{r}
+ggplot(df.word.params.summary , mapping = aes(x =  b.uni,
+                     y = b.multi, color = realpseudo, group = realpseudo)) + geom_smooth(method = "lm") + geom_text(aes(label = word), size = 2) +  ylim(-5, 5) + xlim(-5, 5)+ geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + facet_wrap(~stimulus_presentation_time) + coord_equal() + stat_cor(method = "pearson", cor.coef.name = "r")
+
+ggplot(df.word.params.summary , mapping = aes(x =  b.original,
+                     y = b.multi)) + geom_smooth(method = "lm") + geom_point() + stat_cor() + ylim(-5, 5) + xlim(-5, 5)+ geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + facet_wrap(~stimulus_presentation_time) + coord_equal()
+
+
+ggplot(df.word.params.summary , mapping = aes(x =  b.original,
+                     y = b.uni, color = realpseudo, group = realpseudo)) + geom_smooth() + stat_cor() + ylim(-5, 5) + xlim(-5, 5)+ geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + facet_wrap(~stimulus_presentation_time) + coord_equal() #+ geom_point(size = 0.2) 
+```
+
+
+
+```{r}
+
+ggplot(df.word.params.summary %>% arrange(b.original), mapping = aes(x = word,
+                     y = b.multi, group = stimulus_presentation_time, color = stimulus_presentation_time))  + geom_point(size = 0.01) + geom_smooth() + theme(legend.position = "bottom") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+```{r}
+df.word.params.summary %>%
+  mutate(word = reorder(word, b.original)) %>%   # reorder factor by b.original
+  ggplot(aes(x = word,
+             y = b.multi,
+             group = stimulus_presentation_time,
+             color = stimulus_presentation_time)) +
+  geom_point(size = 0.01) +
+  geom_smooth() +
+  theme(legend.position = "bottom") +
+  labs(x = "word", y = "item difficulty (calibrated by each condition)" ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 4))
+```
+
+
+### Person level: unidimensional vs. multidimensional 
+
+```{r}
+df.word.persons.combined <- df.results.T1$persons %>% 
+  rbind(df.results.T2$persons) %>% 
+  rbind(df.results.T3$persons) %>% 
+  rbind(df.results.T5$persons) %>% 
+  rename(theta.multi = F1, theta.se.multi = SE_F1)
+```
+```{r}
+df.person.theta.summary <- df.word.persons.combined %>% 
+  left_join(df.results.full.model$persons) %>% 
+  rename(theta.uni = F1, theta.se.uni = SE_F1) %>% 
+  left_join(df.data.clean %>% 
+  select(run_id, user_grade, age_group, age) %>% 
+  unique())
+```
+
+
+```{r}
+
+ggplot(df.person.theta.summary, mapping = aes(x = theta.uni,
+                     y = theta.multi)) + stat_cor(method = "pearson", cor.coef.name = "r") + geom_point(alpha = 0.5, size =1) + facet_wrap(~stimulus_presentation_time) + geom_smooth() + ylim(-5, 5) + xlim(-5, 5)+ geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + coord_equal() + labs(x = "theta estimate from unidimensional hypothesis", y = "theta estimate (multidimensional)")
+
+ggplot(df.person.theta.summary, mapping = aes(x = theta.se.uni,
+                     y = theta.se.multi)) + geom_point() + facet_wrap(~stimulus_presentation_time) + geom_smooth()  + stat_cor(method = "pearson", cor.coef.name = "r") +geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + coord_equal() + xlim(0.1, 0.8) + ylim(0.1, 0.8)
+```
+```{r}
+df.keep.theta.trial <- df.data.clean %>% 
+  group_by(run_id, stimulus_presentation_time) %>% 
+  summarise(trial_num_total = max(trial_num_total)) %>% 
+  filter(stimulus_presentation_time == "T3") %>% 
+  add_column(keep = 1)
+  
+df.person.true.theta <- df.data.clean %>% 
+  left_join(df.keep.theta.trial) %>% 
+  filter(keep == 1)
+```
+
+```{r}
+df.person.theta.summary.with.original <- df.person.theta.summary %>% 
+  left_join(df.person.true.theta %>% select(run_id, theta_estimate_3, theta_std_err_3)) %>% 
+  rename(theta.original = theta_estimate_3, theta.se.original = theta_std_err_3)
+```
+
+
+```{r}
+ggplot(df.person.theta.summary.with.original, mapping = aes(y = theta.uni,
+                     x = theta.original))  + geom_point() + geom_smooth(method = "lm")  + ylim(-5, 5) + xlim(-5, 5)+ geom_abline(intercept = 0, slope = 1, color = "grey", linetype = "dashed") + coord_equal() + stat_cor(method = "pearson", cor.coef.name = "r")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

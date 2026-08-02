@@ -1,0 +1,1709 @@
+---
+title: "ROAR-presentation-experiment-3-simulation"
+author: "Wanjing Anya Ma"
+date:  "`r Sys.Date()`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Load Packages
+
+Let's first load the packages that we need for this chapter.
+
+```{r, message=FALSE, warning = FALSE, echo = FALSE}
+library(knitr) # for rendering the RMarkdown file
+library(tidyverse) # for data wrangling 
+library(dplyr)
+library(mirt)
+library(ggpubr)
+library(Metrics)
+library(hash)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(rstudioapi)
+library(viridis)
+library(TAM)
+library(mgcv)
+library(viridis)
+library(patchwork)
+library(reshape2)
+library(catR)
+library(janitor)     # for cleaning column names
+library(broom.mixed) # for tidying up linear models 
+library(emmeans)     # for the joint_tests() function 
+library(lme4)        # for linear mixed effects models
+library(performance) # for assessing model performance
+library(see)         # for assessing model performance
+```
+
+## Settings
+
+```{r echo = FALSE}
+# sets how code looks in knitted document
+opts_chunk$set(comment = "")
+
+# suppresses warning about grouping 
+options(dplyr.summarise.inform = F)
+```
+
+```{r}
+timeConvert <- c(
+  "80" ="T1",
+  "160"= "T2",
+  "350"="T3",
+  "700"= "T4",
+  "infinite"= "T5"
+)
+```
+
+## load corpus
+
+```{r}
+df.new.item.bank <- read.csv("corpus/item_bank_with_slow_items_v6.csv")
+```
+
+# Sim: Benefit of two banks
+
+what is the theta and st error to transition? what is the theta and st to stop early?
+```{r}
+# inverse logit
+inv_logit <- function(x) {
+  0.5 + 0.5 * (exp(x) / (1 + exp(x)))
+}
+
+# simulate responses
+func.create.response <- function(b, th, np, ni) {
+  th.mat <- matrix(th, np, ni, byrow = FALSE)
+  b.mat <- matrix(rep(b, np), nrow = np, byrow = TRUE)
+  pr <- inv_logit(th.mat - b.mat)
+  resp <- pr
+  for (i in 1:ncol(resp)) {
+    resp[, i] <- rbinom(nrow(resp), 1, resp[, i])
+  }
+  return(as.data.frame(resp))
+}
+
+```
+
+```{r}
+func.twoPhasePreSim <- function(item.bank, thetas.true,
+                                easyCorpus = "en-corpusNew-easy",
+                                nEasyStart = 0, maxItems = 25) {
+  
+  # split easy vs hard
+  easyBank_full <- item.bank %>% filter(corpusId == easyCorpus)
+  
+  easyBank <- as.matrix(easyBank_full %>% select(a,b,c,d))
+  
+  np <- length(thetas.true)
+  
+  # simulate full responses (phase 1 and 2 separately)
+  resp_easy_full <- func.create.response(easyBank_full$b, thetas.true, np, nrow(easyBank_full))
+  
+  test_ctrl  <- list(method = "ML", itemSelect = "MFI", infoType = "Fisher", range = c(-6,6))
+  final_ctrl <- list(method = "ML")
+  
+  results_all <- list()
+  
+  for (i in seq_len(np)) {
+    
+    
+    pid <- i
+    th_true <- thetas.true[i]
+    
+    ## Phase 1: Easy items
+    start_easy <- list(fixItems = sample(seq_len(nrow(easyBank)), 1), nrItems = 1, theta = 0)
+    
+    easyBank <- balanced_item_bank %>% filter(corpusId == "en-corpusNew-easy")
+    cbGroup_easy <- as.character(easyBank$group)
+    cbList <- list(names = c("real", "pseudo"), props = c(0.5, 0.5))
+    
+    stop_ctl <- list(rule = 'length',thr = maxItems)
+    final <- list(method = 'ML')
+    
+    res_easy <- randomCAT(
+      itemBank  = as.matrix(easyBank[, c("a","b","c","d", "group")]),
+      responses = as.numeric(resp_easy_full[i, ]),
+      start     = start_easy,
+      test      = test_ctrl,
+      stop = stop_ctl,
+      final     = final_ctrl,
+      cbControl = cbList
+      )
+    
+    pCorrect_easy <- mean(res_easy$pattern)
+    df_easy <- data.frame(
+      pid = pid,
+      trialNumTotal = seq(1,maxItems,1),
+      item = easyBank_full$word[res_easy$testItems],
+      a = easyBank_full$a[res_easy$testItems],
+      b = easyBank_full$b[res_easy$testItems],
+      c = easyBank_full$c[res_easy$testItems],
+      d = easyBank_full$d[res_easy$testItems],
+      resp = res_easy$pattern,
+      corpusId = easyBank_full$corpusId[res_easy$testItems],
+      realpseudo = easyBank_full$group[res_easy$testItems],
+      thetaEstimate = res_easy$thetaProv,
+      thetaSE = res_easy$seProv,
+      thetaTrue = th_true,
+      phase = "easy"
+    )
+    
+    results_all[[i]] <- rbind(df_easy)
+    
+  }
+  
+  return(list(
+    results_all = bind_rows(results_all),
+    resp_easy_full = resp_easy_full
+  ))
+}
+```
+
+```{r}
+func.twoPhasePreSim.hard <- function(item.bank, thetas.true,
+                                easyCorpus = "validated",
+                                nEasyStart = 0, maxItems = 25) {
+  
+  # split easy vs hard
+  easyBank_full <- item.bank %>% filter(corpusId == easyCorpus)
+  
+  easyBank <- as.matrix(easyBank_full %>% select(a,b,c,d))
+  
+  np <- length(thetas.true)
+  
+  # simulate full responses (phase 1 and 2 separately)
+  resp_easy_full <- func.create.response(easyBank_full$b, thetas.true, np, nrow(easyBank_full))
+  
+  
+  
+  test_ctrl  <- list(method = "ML", itemSelect = "MFI", infoType = "Fisher", range = c(-6,6))
+  final_ctrl <- list(method = "ML")
+  
+  results_all <- list()
+  
+  for (i in seq_len(np)) {
+    if (i %% 100 == 0) {
+      print(i)  # will print 30
+    }
+    
+    
+    pid <- i
+    th_true <- thetas.true[i]
+    
+    start_easy <- list(fixItems = sample(seq_len(nrow(easyBank)), 1), nrItems = 1, theta = 0)
+  
+    easyBank <- balanced_item_bank %>% filter(corpusId != "en-corpusNew-easy")
+    cbGroup_easy <- as.character(easyBank$group)
+    cbList <- list(names = c("real", "pseudo"), props = c(0.5, 0.5))
+    
+    stop_ctl <- list(rule = 'length',thr = maxItems)
+    
+    
+    final <- list(method = 'ML')
+    
+    res_easy <- randomCAT(
+      itemBank  = as.matrix(easyBank[, c("a","b","c","d", "group")]),
+      responses = as.numeric(resp_easy_full[i, ]),
+      start     = start_easy,
+      test      = test_ctrl,
+      stop      = stop_ctl,
+      final     = final_ctrl,
+      cbControl = cbList
+      )
+    
+    pCorrect_easy <- mean(res_easy$pattern)
+    df_easy <- data.frame(
+      pid = pid,
+      trialNumTotal = seq(1,maxItems,1),
+      item = easyBank_full$word[res_easy$testItems],
+      a = easyBank_full$a[res_easy$testItems],
+      b = easyBank_full$b[res_easy$testItems],
+      c = easyBank_full$c[res_easy$testItems],
+      d = easyBank_full$d[res_easy$testItems],
+      resp = res_easy$pattern,
+      corpusId = easyBank_full$corpusId[res_easy$testItems],
+      realpseudo = easyBank_full$group[res_easy$testItems],
+      thetaEstimate = res_easy$thetaProv,
+      thetaSE = res_easy$seProv,
+      thetaTrue = th_true,
+      phase = "hard"
+    )
+    
+    results_all[[i]] <- rbind(df_easy)
+  }
+  
+  bind_rows(results_all)
+}
+```
+
+```{r}
+balanced_item_bank <- df.new.item.bank %>%
+  group_by(corpusId) %>%
+  group_modify(~ {
+    # .x is the data for this corpusId
+    min_n <- min(table(.x$realpseudo))
+    
+    # sample min_n items from each realpseudo group
+    .x %>%
+      group_by(realpseudo) %>%
+      slice_sample(n = min_n)
+  }) %>%
+  ungroup() %>% 
+  rename(group = realpseudo) %>% 
+  arrange()
+```
+
+```{r}
+theta_vals <- seq(-6, 6, by = 0.1)
+theta_true <- rep(theta_vals, each = 10)  # 10 participants per theta
+
+sim_results_bundle <- func.twoPhasePreSim(
+  item.bank = balanced_item_bank,
+  thetas.true = theta_true,
+  easyCorpus = "en-corpusNew-easy",
+  nEasyStart = 0,
+  maxItems = 84
+)
+```
+
+```{r}
+sim_results <- sim_results_bundle$results_all
+
+sim_results_resp <- sim_results_bundle$resp_easy_full
+```
+
+```{r}
+sim_results.hard <- func.twoPhasePreSim.hard(
+  item.bank = balanced_item_bank,
+  thetas.true = theta_true,
+  easyCorpus = "validated",
+  nEasyStart = 0,
+  maxItems = 84
+)
+```
+
+
+```{r}
+df_eval <- sim_results %>%
+  rbind(sim_results.hard) %>% 
+  mutate(theta_group = round(thetaTrue)) %>% 
+  group_by(trialNumTotal, theta_group, phase) %>%
+  dplyr::summarise(n = n(), sem = mean(thetaSE), 
+                     reliability = empirical_rxx(as.matrix(tibble(F1 = thetaEstimate, SE_F1 = thetaSE))),
+                     mse = Metrics :: rmse(thetaTrue, thetaEstimate),
+                     bias = Metrics :: bias(thetaTrue, thetaEstimate))
+```
+
+```{r}
+df_eval_v2 <- sim_results %>%
+  rbind(sim_results.hard) %>% 
+  mutate(theta_group = round(thetaTrue)) %>% 
+  group_by(trialNumTotal, theta_group, phase, thetaTrue) %>%
+  dplyr::summarise(n = n(), sem = mean(thetaSE), 
+                     reliability = empirical_rxx(as.matrix(tibble(F1 = thetaEstimate, SE_F1 = thetaSE))),
+                     mse = Metrics :: rmse(thetaTrue, thetaEstimate),
+                     bias = Metrics :: bias(thetaTrue, thetaEstimate))
+
+ggplot(df_eval_v2 %>% 
+  filter(trialNumTotal == 84), aes(x = thetaTrue, y = sem, color = phase)) +
+  geom_smooth(size = 0.5) +
+  theme_minimal() +
+  labs(title = "SEM by Theta Estimate",
+       x = "Theta Estimate", y = "SEM") + ylim(0, 5) 
+```
+
+```{r}
+# Plot MSE
+p_mse <- ggplot(df_eval, aes(x = trialNumTotal, y = mse, color = phase)) +
+  geom_point(size = 0.5) +
+  theme_minimal() +
+  labs(title = "MSE by Theta Estimate",
+       x = "Theta Estimate", y = "Mean Squared Error") + ylim(0, 5) + facet_wrap(~theta_group)
+
+# Plot Bias
+p_bias <- ggplot(df_eval, aes(x = trialNumTotal, y = bias, color = phase)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Bias by Theta Estimate",
+       x = "Theta Estimate", y = "Bias") + facet_wrap(~theta_group)
+
+
+# df_eval_all <- sim_results %>%
+#   rbind(sim_results.hard) %>% 
+#   mutate(theta_group = round(thetaTrue)) %>% 
+#   group_by(trialNumTotal, phase) %>%
+#   dplyr::summarise(n = n(), sem = mean(thetaSE), 
+#                      reliability = empirical_rxx(as.matrix(tibble(F1 = thetaEstimate, SE_F1 = thetaSE))),
+#                      mse = Metrics :: rmse(thetaTrue, thetaEstimate), 
+#                      cor = cor(thetaTrue, thetaEstimate), 
+#                      bias = Metrics :: bias(thetaTrue, thetaEstimate))
+
+# Plot Reliability
+p_rel <- ggplot(df_eval, aes(x = trialNumTotal, y = reliability, color = phase)) +
+  geom_point(size = 0.5) +
+  theme_minimal() +
+  labs(title = "Reliability by Theta Estimate",
+       x = "Theta Estimate", y = "Reliability")+ ylim(0, 1)+ facet_wrap(~theta_group)
+
+p_sem <- ggplot(df_eval, aes(x = trialNumTotal, y = sem, color = phase)) +
+  geom_point(size = 0.5) +
+  theme_minimal() +
+  labs(title = "SEM by Theta Estimate",
+       x = "Theta Estimate", y = "sem")+ ylim(0, 5) + facet_wrap(~theta_group)
+
+# Show plots
+p_mse
+p_bias
+p_rel
+p_sem
+```
+
+# Sim: Transition Rule
+run participants (theta -6, 6) 
+
+## How to transition?
+
+```{r}
+easy_items <- balanced_item_bank %>% 
+  filter(corpusId == "en-corpusNew-easy") 
+
+sim_results_resp_name <- sim_results_resp %>%
+  dplyr::rename_with(~ easy_items$word, .cols = everything())
+
+df.sim.base <- sim_results_resp_name %>% 
+  add_column(pid = seq(1, 1210, 1)) %>% 
+  relocate(pid) %>% 
+  add_column(theta_true = theta_true) %>% 
+  tidyr::pivot_longer(
+    cols = -c(pid, theta_true),
+    names_to = "item",
+    values_to = "resp"
+  ) %>% 
+  right_join(sim_results) 
+```
+
+```{r}
+find_first_qualified_trial <- function(df,
+                                       n_in_row = 5,
+                                       theta_threshold = -3,
+                                       resp_col = "resp",
+                                       theta_col = "thetaEstimate",
+                                       se_col = "thetaSE",
+                                       trial_col = "trialNumTotal",
+                                       pid_col = "pid",
+                                       theta_true_col = "theta_true") {
+  
+  resp_sym  <- rlang::sym(resp_col)
+  theta_sym <- rlang::sym(theta_col)
+  se_sym    <- rlang::sym(se_col)
+  trial_sym <- rlang::sym(trial_col)
+  pid_sym   <- rlang::sym(pid_col)
+  true_sym  <- rlang::sym(theta_true_col)
+  
+  df %>%
+    arrange(!!pid_sym, !!trial_sym) %>%
+    group_by(!!pid_sym) %>%
+    mutate(
+      # rolling sum of last n_in_row responses
+      roll_sum = Reduce(
+        `+`,
+        lapply(0:(n_in_row - 1), function(k)
+          lag(!!resp_sym, k, default = 0))
+      ),
+      
+      hit_now = roll_sum == n_in_row,
+      ever_hit = cumany(hit_now),
+      
+      qualified = ever_hit & (!!theta_sym >= theta_threshold)
+    ) %>%
+    summarize(
+      !!trial_col := if(any(qualified)) {
+        first(which(qualified))
+      } else {
+        n()
+      },
+      
+      !!theta_col := (!!theta_sym)[if(any(qualified)) first(which(qualified)) else n()],
+      !!se_col    := (!!se_sym)[if(any(qualified)) first(which(qualified)) else n()],
+      !!theta_true_col := first(!!true_sym),
+      
+      .groups = "drop"
+    )
+}
+```
+
+```{r}
+df.first4.2 <- find_first_qualified_trial(
+  df.sim.base,
+  n_in_row = 4,
+  theta_threshold = -2
+)
+
+df.first5.2 <- find_first_qualified_trial(
+  df.sim.base,
+  n_in_row = 5,
+  theta_threshold = -2
+)
+
+df.first4 <- find_first_qualified_trial(
+  df.sim.base,
+  n_in_row = 4,
+  theta_threshold = -3
+)
+
+df.first5 <- find_first_qualified_trial(
+  df.sim.base,
+  n_in_row = 5,
+  theta_threshold = -3
+)
+```
+
+
+```{r}
+ggplot(df.first4.2, aes(x = theta_true, y = trialNumTotal, color = thetaEstimate)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = TRUE) +
+  labs(
+    x = "True Theta",
+    y = "Trial Number of First 3-in-a-Row & Theta > -3",
+    title = "Transitioning Pattern"
+  ) +
+  theme_minimal()
+
+ggplot(df.first5.2, aes(x = theta_true, y = trialNumTotal, color = thetaEstimate)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = TRUE) +
+  labs(
+    x = "True Theta",
+    y = "Trial Number of First 3-in-a-Row & Theta > -3",
+    title = "Transitioning Pattern"
+  ) +
+  theme_minimal()
+
+ggplot(df.first4, aes(x = theta_true, y = trialNumTotal, color = thetaEstimate)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = TRUE) +
+  labs(
+    x = "True Theta",
+    y = "Trial Number of First 4-in-a-Row & Theta > -3",
+    title = "Transitioning Pattern"
+  ) +
+  theme_minimal()
+
+ggplot(df.first5, aes(x = theta_true, y = trialNumTotal, color = thetaEstimate)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = TRUE) +
+  labs(
+    x = "True Theta",
+    y = "Trial Number of First 5-in-a-Row & Theta > -3",
+    title = "Transitioning Pattern"
+  ) +
+  theme_minimal()
+```
+
+- create SEM curve that is the widest. 
+- options: 3 in a row, 4 in a row,  5 in a row. 
+
+stopping rule: 
+- true label: chance performer vs. non-chance performer 
+- how many trials do you need? 
+
+## classification eval
+```{r}
+
+make_classification_metrics <- function(df,
+                                        theta_cut = -3,
+                                        trial_cut = 20) {
+  safe_div <- function(num, den) ifelse(den == 0, NA, num / den)
+  
+  df2 <- df %>%
+    dplyr::mutate(
+      true_class = ifelse(theta_true < theta_cut, 0, 1),
+      pred_class = ifelse(trialNumTotal < trial_cut, 1, 0)
+    )
+  
+  cm <- table(True = df2$true_class,
+              Pred = df2$pred_class)
+  
+  
+  # Extract cells
+  TP <- cm["1","1"]
+  TN <- cm["0","0"]
+  FP <- cm["0","1"]
+  FN <- cm["1","0"]
+  
+  # Metrics
+  accuracy  <- (TP + TN) / sum(cm)
+  precision <- TP / (TP + FP)
+  recall    <- TP / (TP + FN)
+  
+  f1 <- safe_div(2 * precision * recall,
+                 precision + recall)
+  
+  list(
+    confusion_matrix = cm,
+    accuracy  = accuracy,
+    precision = precision,
+    recall    = recall,
+    f1 = f1
+  )
+}
+```
+
+
+```{r}
+# Run metrics for each dataset
+metrics_first5 <- make_classification_metrics(df.first5)
+metrics_first4 <- make_classification_metrics(df.first4)
+metrics_first4_2 <- make_classification_metrics(df.first4.2)
+metrics_first5_2 <- make_classification_metrics(df.first5.2)
+
+# Convert to tibble
+report_table <- bind_rows(
+  tibble(
+    dataset = "a: first 4 in a row with -3",
+    accuracy = metrics_first4$accuracy,
+    precision = metrics_first4$precision,
+    recall = metrics_first4$recall,
+    balanced_f1 = metrics_first4$f1
+  ),
+  tibble(
+    dataset = "b: first 4 in a row with -2",
+    accuracy = metrics_first4_2$accuracy,
+    precision = metrics_first4_2$precision,
+    recall = metrics_first4_2$recall,
+    balanced_f1 = metrics_first4_2$f1
+  ),
+  tibble(
+    dataset = "c: first 5 in a row with -3",
+    accuracy = metrics_first5$accuracy,
+    precision = metrics_first5$precision,
+    recall = metrics_first5$recall,
+    balanced_f1 = metrics_first5$f1
+  ),
+  tibble(
+    dataset = "d: first 5 in a row with -2",
+    accuracy = metrics_first5_2$accuracy,
+    precision = metrics_first5_2$precision,
+    recall = metrics_first5_2$recall,
+    balanced_f1 = metrics_first5_2$f1
+  ),
+)
+
+report_table
+write.csv(report_table, "results/study2_transition_rule_simulation_classification_results.csv")
+```
+limitation of the simulation. 
+
+## SEM eval
+
+```{r}
+func.twoPhasePreSim.later <- function(
+  item.bank,
+  thetas.true,
+  df,
+  easyCorpus = "validated",
+  nEasyStart = 0,
+  maxItems = 84
+) {
+  
+  ## ---- split easy vs hard ----
+  easyBank_full <- item.bank %>%
+    filter(corpusId == easyCorpus)
+  
+  easyBank <- as.matrix(
+    easyBank_full %>% select(a, b, c, d)
+  )
+  
+  np <- length(thetas.true)
+  
+  ## ---- simulate responses ----
+  resp_easy_full <- func.create.response(
+    easyBank_full$b,
+    thetas.true,
+    np,
+    nrow(easyBank_full)
+  )
+  
+  test_ctrl  <- list(
+    method = "ML",
+    itemSelect = "MFI",
+    infoType = "Fisher",
+    range = c(-6, 6)
+  )
+  
+  final_ctrl <- list(method = "ML")
+  
+  results_all <- vector("list", np)
+  
+  ## =====================================================
+  ##                    MAIN LOOP
+  ## =====================================================
+  for (i in seq_len(np)) {
+    
+    pid <- i
+    th_true <- thetas.true[i]
+    
+    ## ---- pull prior state from df (or initialize) ----
+    df_pid <- df %>% filter(pid == !!pid)
+    
+    if (nrow(df_pid) == 0) {
+      theta_start <- 0
+      trialNumTotal <- 0
+    } else {
+      theta_start   <- df_pid$thetaEstimate[1]
+      trialNumTotal <- df_pid$trialNumTotal[1]
+    }
+    
+    if (trialNumTotal == 84){
+      next
+    }
+    
+    ## ---- starting state ----
+    start_easy <- list(
+      fixItems = sample(seq_len(nrow(easyBank)), 1),
+      nrItems  = 1,
+      theta    = theta_start
+    )
+    
+    ## ---- content balancing ----
+    easyBank_cb <- balanced_item_bank %>%
+      filter(corpusId != "en-corpusNew-easy")
+    
+    cbList <- list(
+      names = c("real", "pseudo"),
+      props = c(0.5, 0.5)
+    )
+    
+    ## ---- stop rule respects prior items ----
+    stop_ctl <- list(
+      rule = "length",
+      thr  = maxItems - trialNumTotal
+    )
+    
+    ## ---- run CAT ----
+    res_easy <- randomCAT(
+      itemBank  = as.matrix(
+        easyBank_cb[, c("a", "b", "c", "d", "group")]
+      ),
+      responses = as.numeric(resp_easy_full[i, ]),
+      start     = start_easy,
+      test      = test_ctrl,
+      stop      = stop_ctl,
+      final     = final_ctrl,
+      cbControl = cbList
+    )
+    
+    pCorrect_easy <- mean(res_easy$pattern)
+    df_easy <- data.frame(
+      pid = pid,
+      trialNumTotal = seq(trialNumTotal+1,maxItems,1),
+      item = easyBank_full$word[res_easy$testItems],
+      a = easyBank_full$a[res_easy$testItems],
+      b = easyBank_full$b[res_easy$testItems],
+      c = easyBank_full$c[res_easy$testItems],
+      d = easyBank_full$d[res_easy$testItems],
+      resp = res_easy$pattern,
+      corpusId = easyBank_full$corpusId[res_easy$testItems],
+      realpseudo = easyBank_full$group[res_easy$testItems],
+      thetaEstimate = res_easy$thetaProv,
+      thetaSE = res_easy$seProv,
+      thetaTrue = th_true,
+      phase = "hard"
+    )
+    
+    results_all[[i]] <- rbind(df_easy)
+    
+  }
+  
+  ## ---- return updated df ----
+  bind_rows(results_all)
+}
+```
+
+```{r}
+
+sim_results.later.5 <- func.twoPhasePreSim.later(item.bank = balanced_item_bank,
+  thetas.true = theta_true,
+  df.first5.2,
+  easyCorpus = "validated",
+  nEasyStart = 0,
+  maxItems = 84)
+```
+
+```{r}
+sim_results.later.4 <- func.twoPhasePreSim.later(item.bank = balanced_item_bank,
+  thetas.true = theta_true,
+  df.first4.2,
+  easyCorpus = "validated",
+  nEasyStart = 0,
+  maxItems = 84)
+```
+
+
+```{r}
+# hi.new.sim.select <- sim_results.later %>% 
+#   select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase) %>% 
+#   rbind(df.sim.base %>% select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase)) %>% 
+#   group_by(pid, trialNumTotal, thetaTrue) %>% 
+#   summarise(phase = max(phase)) %>% 
+#   filter(trialNumTotal == 84) %>% 
+#   mutate(keep = 1)
+# 
+# df_eval_new <- sim_results.later %>% 
+#   select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase) %>% 
+#   rbind(df.sim.base %>% select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase)) %>% 
+#   filter(trialNumTotal == 84) %>% 
+#   left_join(hi.new.sim.select) %>% 
+#   filter(keep == 1) %>% 
+#   rename(sem = thetaSE) %>% 
+#   mutate(phase = "new")
+# 
+# df_compare <- sim_results %>%
+#   rbind(sim_results.hard) %>% 
+#   mutate(theta_group = round(thetaTrue)) %>% 
+#   filter(trialNumTotal == 84) %>% 
+#   select(thetaTrue, phase, thetaSE, thetaEstimate) %>% 
+#   rename(sem = thetaSE) %>% 
+#   rbind(df_eval_new %>% select(thetaTrue, sem, phase, thetaEstimate))
+
+```
+
+
+```{r}
+df.new.simulated.rule.5 <- sim_results.later.5 %>% 
+  select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase) %>% 
+  rbind(df.sim.base %>% select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase)) %>% 
+  group_by(pid, trialNumTotal, thetaTrue) %>% 
+  summarise(phase = max(phase)) %>% 
+  mutate(keep = 1) %>% right_join(sim_results.later.5 %>% 
+  select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase) %>% 
+  rbind(df.sim.base %>% select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase))) %>%
+  filter(keep == 1)
+
+df.new.simulated.rule.4 <- sim_results.later.4 %>% 
+  select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase) %>% 
+  rbind(df.sim.base %>% select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase)) %>% 
+  group_by(pid, trialNumTotal, thetaTrue) %>% 
+  summarise(phase = max(phase)) %>% 
+  mutate(keep = 1) %>% right_join(sim_results.later.4 %>% 
+  select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase) %>% 
+  rbind(df.sim.base %>% select(pid, thetaTrue, item, resp, trialNumTotal, thetaEstimate, thetaSE, phase))) %>%
+  filter(keep == 1)
+```
+```{r}
+df.new.simulated.rule %>% 
+  left_join(df.new.item.bank %>% select(word, a, b, c, d) %>% rename(item = word))
+```
+```{r}
+build_scoring_model_3pl <- function(item_bank){
+  stopifnot(all(c("a","b","c") %in% names(item_bank)))
+  n_items <- nrow(item_bank)
+
+  # dummy numeric data (not used for fitting)
+  dat <- matrix(
+  sample(c(0, 1), size = 100 * n_items, replace = TRUE),
+  nrow = 100,
+  ncol = n_items
+)
+  
+
+colnames(dat) <- paste0("item_", seq_len(n_items))
+
+  # create a mirt parameter template, then fill it
+  mod0 <- mirt(dat, 1, itemtype = "3PL", verbose = FALSE)
+  pars <- mod2values(mod0)
+  print(1)
+
+  # fill item parameters (mirt uses a1 and d; d = -a*b)
+  pars$value[pars$name == "a1"] <- item_bank$a
+  pars$value[pars$name == "d"]  <- -item_bank$a * item_bank$b
+  pars$value[pars$name == "g"]  <- item_bank$c
+  pars$value[pars$name == "u"]  <- 1
+  print(2)
+
+  # lock them (so nothing is estimated)
+  pars$est <- FALSE
+
+  # build the scoring model from fixed parameters
+  mirt(dat, 1, itemtype = "3PL", pars = pars, pars.only = TRUE, verbose = FALSE)
+}
+
+score_with_item_bank <- function(resp_wide, item_bank, method="ML", quadpts=61){
+
+  pars_mirt <- data.frame(
+    a1 = item_bank$a,
+    d  = -item_bank$a * item_bank$b,
+    g  = item_bank$c,
+    u  = 1
+  )
+
+  n_items <- nrow(item_bank)
+  dummy_resp <- matrix(1, nrow = 1, ncol = n_items)
+  colnames(dummy_resp) <- paste0("Item", seq_len(n_items))
+  
+  
+  scoring_model <- build_scoring_model_3pl(item_bank)
+  print(3)
+
+resp_matrix <- resp_wide[, -1, drop=FALSE]
+resp_matrix[] <- lapply(resp_matrix, function(x) as.numeric(as.character(x)))
+resp_matrix <- as.matrix(resp_matrix)
+colnames(resp_matrix) <- colnames(extract.mirt(scoring_model, "data"))
+
+fs <- fscores(scoring_model, response.pattern = resp_matrix,
+              method = method, full.scores.SE = TRUE, quadpts = quadpts, max_theta = 6, min_theta = -6)
+
+
+  data.frame(pid = resp_wide[[1]], theta = fs[, "F1"], theta_se = fs[, "SE_F1"])
+}
+```
+
+```{r}
+df.new.item.bank.orderd <- df.new.item.bank %>% 
+  arrange(word)
+```
+
+
+```{r}
+df_resp_new.4 <- df.new.simulated.rule.4 %>% 
+  left_join(df.new.item.bank %>% select(word, a, b, c, d) %>% rename(item = word)) %>% 
+  select(pid, resp, item)
+
+df_resp_new.5 <- df.new.simulated.rule.5 %>% 
+  left_join(df.new.item.bank %>% select(word, a, b, c, d) %>% rename(item = word)) %>% 
+  select(pid, resp, item)
+
+```
+
+```{r}
+make_resp_wide <- function(df, item_bank, fake_pid = -1) {
+  
+  fake_df <- data.frame(
+    pid  = fake_pid,
+    resp = 1,
+    item = item_bank$word
+  )
+  
+  df_full <- dplyr::bind_rows(df, fake_df)
+  
+  resp_wide <- df_full %>%
+    dplyr::ungroup() %>%
+    dplyr::select(pid, item, resp) %>%
+    tidyr::pivot_wider(
+      names_from  = item,
+      values_from = resp,
+      values_fill = NA
+    ) %>%
+    dplyr::arrange(pid) %>%
+    dplyr::filter(pid != fake_pid)
+  
+  # ensure exact item order
+  resp_wide <- resp_wide[, c("pid", item_bank$word)]
+  
+  return(resp_wide)
+}
+
+resp_wide_hard <- make_resp_wide(sim_results.hard, df.new.item.bank.orderd)
+
+resp_wide_easy <- make_resp_wide(sim_results, df.new.item.bank.orderd)
+
+```
+
+```{r}
+resp_wide_new_4 <- make_resp_wide(df_resp_new.4 , df.new.item.bank.orderd)
+
+resp_wide_new_5 <- make_resp_wide(df_resp_new.5, df.new.item.bank.orderd)
+```
+```{r}
+theta_df_new_4 <- score_with_item_bank(resp_wide_new_4,
+                                 df.new.item.bank.orderd,
+                                 method = "ML")
+
+theta_df_new_5 <- score_with_item_bank(resp_wide_new_5,
+                                 df.new.item.bank.orderd,
+                                 method = "ML")
+```
+
+```{r}
+theta_df_hard <- score_with_item_bank(resp_wide_hard,
+                                 df.new.item.bank.orderd,
+                                 method = "ML") 
+
+theta_df_easy <- score_with_item_bank(resp_wide_easy,
+                                 df.new.item.bank.orderd,
+                                 method = "ML") 
+```
+
+```{r}
+df_eval_new_4 <- hi.new.sim.select %>% 
+  select(pid, thetaTrue) %>% 
+  add_column(thetaEstimate = theta_df_new_4$theta, sem = theta_df_new_4$theta_se) %>% 
+  mutate(phase = "Adaptive timing") %>% 
+  ungroup()
+
+df_eval_new_5 <- hi.new.sim.select %>% 
+  select(pid, thetaTrue) %>% 
+  add_column(thetaEstimate = theta_df_new_5$theta, sem = theta_df_new_5$theta_se) %>% 
+  mutate(phase = "Adaptive timing") %>% 
+  ungroup()
+
+df_eval_hard <- hi.new.sim.select %>% 
+  select(pid, thetaTrue) %>% 
+  add_column(thetaEstimate = theta_df_hard$theta, sem = theta_df_hard$theta_se) %>% 
+  mutate(phase = "350 ms") %>% 
+  ungroup()
+
+df_eval_easy <- hi.new.sim.select %>% 
+  select(pid, thetaTrue) %>% 
+  add_column(thetaEstimate = theta_df_easy$theta, sem = theta_df_easy$theta_se) %>% 
+  mutate(phase = "Infinite") %>% 
+  ungroup()
+
+
+df_compare <- df_eval_new_4 %>% 
+  rbind(df_eval_hard) %>% 
+  rbind(df_eval_easy)
+
+df.plot <- df_compare %>% 
+  filter(!is.na(sem)) %>% 
+  group_by(thetaTrue, phase) %>% 
+  summarise(sem = mean(sem, na.rm = TRUE), mse = Metrics :: mse(thetaTrue, thetaEstimate)) %>% 
+  rename(Test = phase) %>% 
+  mutate(
+    Test = factor(Test, levels = c("350 ms", "Infinite", "Adaptive timing"))
+  )
+  
+
+```
+
+```{r}
+g.study3.sem <- ggplot(df.plot, aes(x = thetaTrue, y = sem, color = Test, fill = Test, group= Test)) +
+  geom_smooth(size = 1) +
+  scale_color_manual(values = c( "black","#E05A1D", "#8F993E")) +
+  scale_fill_manual(values = c("black", "#E05A1D", "#8F993E")) +
+  labs(title = "Standard error of measurement",
+       x = "Theta estimate", y = "Standard error of measurement") + ylim(0, 3) + theme(legend.position = "None") +theme(legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 14),
+        title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)))
+
+g.study3.mse <-ggplot(df.plot, aes(x = thetaTrue, y = mse, color = Test, fill = Test, group= Test)) +
+  geom_smooth(size = 1) +
+  scale_color_manual(values = c("black", "#E05A1D", "#8F993E")) +
+  scale_fill_manual(values = c("black", "#E05A1D", "#8F993E")) +
+  labs(title = "Mean squared error",
+       x = "Theta estimate", y = "Mean squared error") + ylim(0, 2) + theme(legend.position = "none") + theme(legend.text = element_text(size = 12),                                                                                                    title = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)))
+
+
+(g.study3.sem + g.study3.mse) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+ggsave("plots/roar_presentation_study3_transition_rule.pdf", width = 8, height = 4, units = "in")
+```
+```{r}
+g.study3.sem.demo <- ggplot(df.plot %>% filter(Test!= "Adaptive timing"), aes(x = thetaTrue, y = sem, color = Test, fill = Test, group= Test)) +
+  geom_smooth(size = 1) +
+  scale_color_manual(values = c( "black","#E05A1D", "#8F993E")) +
+  scale_fill_manual(values = c("black", "#E05A1D", "#8F993E")) +
+  labs(title = "Standard error of measurement",
+       x = "Theta estimate", y = "Standard error of measurement") + ylim(0, 3) + theme(legend.position = "None") +theme(legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 14),
+        title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)))
+
+g.study3.mse.demo <-ggplot(df.plot %>% filter(Test!= "Adaptive timing"), aes(x = thetaTrue, y = mse, color = Test, fill = Test, group= Test)) +
+  geom_smooth(size = 1) +
+  scale_color_manual(values = c("black", "#E05A1D", "#8F993E")) +
+  scale_fill_manual(values = c("black", "#E05A1D", "#8F993E")) +
+  labs(title = "Mean squared error",
+       x = "Theta estimate", y = "Mean squared error") + ylim(0, 2) + theme(legend.position = "none") + theme(legend.text = element_text(size = 12),                                                                                                    title = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, margin = margin(t = 10)))
+
+
+(g.study3.sem.demo + g.study3.mse.demo) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+#ggsave("plots/roar_presentation_study3_transition_rule.pdf", width = 8, height = 4, units = "in")
+```
+
+# Sim: Early Stopping
+
+## Theoretical Simulations 
+Idea: simulate a mix of students who are (a) at floor or careless respondents, or (b) students can read and not careless. 
+
+```{r}
+theta_true <- sample(df.thetas$trueTheta, size = 5000, replace = TRUE)
+```
+
+```{r}
+sum(theta_true < -5)
+```
+
+```{r}
+sim_results_bundle <- func.twoPhasePreSim(
+  item.bank = balanced_item_bank,
+  thetas.true = theta_true,
+  easyCorpus = "en-corpusNew-easy",
+  nEasyStart = 0,
+  maxItems = 84
+)
+```
+
+
+```{r}
+hi <- sim_results_bundle$results_all
+```
+
+```{r}
+hi
+```
+
+```{r}
+
+ggplot(hi %>% 
+  filter(thetaTrue == -6, trialNumTotal == 84),
+       aes(x = thetaEstimate,
+           y = thetaSE)) +
+  geom_point(se = FALSE, alpha = 0.2)
+
+
+ggplot(hi %>% 
+  filter(thetaTrue == -6, trialNumTotal == 84),
+       aes(x = thetaEstimate)) +
+  geom_histogram(se = FALSE, alpha = 0.5, bins = 20)
+```
+```{r}
+
+```
+
+```{r}
+hi %>% 
+  filter(trialNumTotal <= 40, trialNumTotal > 20) %>% 
+  group_by(pid, thetaTrue) %>% 
+  summarise(acc = mean(resp),max_theta =  max(thetaEstimate)) %>% 
+  mutate(early_stop = ifelse(max_theta <= -5.9, 1, 0), 
+         #early_stop =ifelse(acc < 0.6, 1, 0), 
+         true_low = as.numeric(thetaTrue ==-6)) %>% 
+  ungroup() %>% 
+  summarise(
+    TP = sum(early_stop == 1 & true_low == 1),
+    FP = sum(early_stop == 1 & true_low == 0),
+    FN = sum(early_stop == 0 & true_low == 1),
+    TN = sum(early_stop == 0 & true_low == 0)
+  ) %>%
+  mutate(
+    precision = TP / (TP + FP),
+    recall = TP / (TP + FN),
+    f1 = 2 * precision * recall / (precision + recall),
+    accuracy = (TP + TN) / (TP + FP + FN + TN)
+  )
+```
+
+```{r}
+hi.prob <- hi %>% 
+  filter(trialNumTotal <= 30) %>% 
+  group_by(pid, thetaTrue) %>% 
+  summarise(acc = mean(resp)) %>% 
+  mutate(prob_stop = ifelse(acc < 0.65, 1, 0)) %>% 
+  group_by(thetaTrue) %>% 
+  summarise(prob_stop_per_theta = mean(prob_stop))
+  
+ggplot(hi.prob, aes(x = thetaTrue, y = prob_stop_per_theta)) +
+  geom_smooth(size = 0.5) +
+  theme_minimal() +
+  labs(x = "Theta Estimate", y = "prob")
+```
+
+```{r}
+library(tidyverse)
+
+# trial_vals <- c(10, 15, 20, 25, 30)
+# theta_thresh <- c(-6, -5.5, -5)
+# 
+# params <- expand_grid(trialNumTotal = trial_vals,
+#                       theta_threshold = theta_thresh)
+# 
+# hi.prob <- params %>%
+#   pmap_dfr(function(trialNumTotal, theta_thresh) {
+# 
+#     hi %>%
+#       filter(trialNumTotal <= !!trialNumTotal) %>%
+#       group_by(pid, thetaTrue) %>%
+#       summarise(acc = mean(resp), max_theta = max(thetaEstimate), .groups = "drop") %>% 
+#       mutate(prob_stop = ifelse(max_theta <= theta_thresh, 1, 0)) %>%
+#       group_by(thetaTrue) %>%
+#       summarise(prob_stop_per_theta = mean(prob_stop), .groups = "drop") %>%
+#       mutate(trialNumTotal = trialNumTotal,
+#              theta_thresh = theta_thresh)
+#   })
+
+trial_vals <- c(20, 30, 40)
+theta_thresh <- c(-6, -5.5, -5)
+
+params <- expand_grid(trial = trial_vals,
+                      theta_threshold = theta_thresh)
+
+hi.prob <- params %>%
+  pmap_dfr(function(trial, theta_threshold) {   # fix spelling here
+
+    hi %>%
+      filter(trialNumTotal <= trial, trialNumTotal > trial - 10) %>%       # just use argument directly
+      group_by(pid, thetaTrue) %>%
+      summarise(acc = mean(resp),
+                max_theta = max(thetaEstimate),
+                .groups = "drop") %>% 
+      mutate(prob_stop = ifelse(max_theta <= theta_threshold, 1, 0)) %>%
+      group_by(thetaTrue) %>%
+      summarise(prob_stop_per_theta = mean(prob_stop), .groups = "drop") %>%
+      mutate(trialNumTotal = trial,
+             theta_threshold = theta_threshold)       # fix spelling
+  })
+hi.prob
+ggplot(hi.prob,
+       aes(x = thetaTrue,
+           y = prob_stop_per_theta,
+           color = factor(trialNumTotal),
+           linetype = factor(theta_threshold))) +
+  geom_smooth(se = FALSE, size = 0.8) +
+  theme_minimal() +
+  labs(x = "Theta Estimate",
+       y = "Probability of Stop",
+       color = "Trial Num",
+       linetype = "Accuracy Threshold")
+
+library(RColorBrewer)
+
+cols <- brewer.pal(5, "Set1")
+
+ggplot(hi.prob,
+       aes(x = thetaTrue,
+           y = prob_stop_per_theta,
+           color = factor(trialNumTotal),
+           )) +
+  scale_color_manual(values = cols) +
+  geom_smooth(se = FALSE, size = 0.8) +
+  theme_minimal() +
+  labs(x = "Theta Estimate",
+       y = "Probability of Stop",
+       color = "Trial Num",
+       linetype = "Accuracy Threshold") + facet_wrap(~theta_threshold) + theme(legend.position = "bottom") + xlim(-6, 6)
+```
+```{r}
+library(tidyverse)
+
+trial_vals <- c(10, 15, 20, 25, 30)
+acc_thresh <- c(0.5, 0.55, 0.6, 0.65, 0.7)
+
+params <- expand_grid(trialNumTotal = trial_vals,
+                      acc_threshold = acc_thresh)
+
+hi.prob <- params %>%
+  pmap_dfr(function(trialNumTotal, acc_threshold) {
+
+    hi %>%
+      filter(trialNumTotal <= !!trialNumTotal) %>%
+      group_by(pid, thetaTrue) %>%
+      summarise(acc = mean(resp), .groups = "drop") %>%
+      mutate(prob_stop = ifelse(acc < acc_threshold, 1, 0)) %>%
+      group_by(thetaTrue) %>%
+      summarise(prob_stop_per_theta = mean(prob_stop), .groups = "drop") %>%
+      mutate(trialNumTotal = trialNumTotal,
+             acc_threshold = acc_threshold)
+  })
+
+ggplot(hi.prob,
+       aes(x = thetaTrue,
+           y = prob_stop_per_theta,
+           color = factor(trialNumTotal),
+           linetype = factor(acc_threshold))) +
+  geom_smooth(se = FALSE, size = 0.8) +
+  theme_minimal() +
+  labs(x = "Theta Estimate",
+       y = "Probability of Stop",
+       color = "Trial Num",
+       linetype = "Accuracy Threshold")
+
+library(RColorBrewer)
+
+cols <- brewer.pal(5, "Set1")
+
+ggplot(hi.prob,
+       aes(x = thetaTrue,
+           y = prob_stop_per_theta,
+           color = factor(trialNumTotal),
+           )) +
+  scale_color_manual(values = cols) +
+  geom_smooth(se = FALSE, size = 0.8) +
+  theme_minimal() +
+  labs(x = "Theta Estimate",
+       y = "Probability of Stop",
+       color = "Trial Num",
+       linetype = "Accuracy Threshold") + facet_wrap(~acc_threshold) + theme(legend.position = "bottom")
+```
+
+## Empirical Evidence: from hard item bank
+```{r}
+df.student.data <- read_csv("data/swr_with_94_trials.csv")
+```
+
+
+```{r}
+df.student.data.k.2.clean <- df.student.data %>% 
+  filter(completed == "TRUE", assessment_stage == "test_response") %>%
+  filter(user_grade %in% c("1", "2", "Kindergarten")) 
+  
+```
+
+```{r}
+df.thetas <- df.student.data.k.2.clean %>% 
+  filter(trial_num_total == 94) %>% 
+  select(user_grade, run_id, theta_estimate, theta_std_err) %>% 
+  rename(trueTheta = theta_estimate, trueSE = theta_std_err)
+```
+
+```{r}
+hist(df.thetas$trueTheta)
+```
+
+### what patterns do the low performance share? 
+
+```{r}
+df.hi <- df.student.data.k.2.clean %>% 
+  filter(trial_num_total < 30) %>% 
+  #mutate(test_stage = (trial_num_total - 1) %/% 10 + 1 ) %>% 
+  group_by(run_id) %>% 
+  summarise(median_rt = median(rt)) %>% 
+  left_join(df.thetas) %>% 
+  filter(trueTheta < -5)
+
+ggplot(df.hi, aes(x = median_rt)) +
+  geom_density() +
+  ylim(0, NA) + xlim(0, 5000)
+```
+```{r}
+df.std %>% 
+  group_by(run_id) %>% 
+  tally()
+```
+
+
+```{r}
+df.std <- df.student.data.k.2.clean %>% 
+  left_join(df.thetas, by = "run_id") %>% 
+  filter(trueTheta == -6, grade == "Kindergarten")
+
+df.std %>% filter(run_id == "0BSpYthIwrL2xhanhqAg")
+
+ggplot(df.std, aes(x = trial_num_total, theta_std_err, group = run_id)) +
+  geom_line(alpha = 0.2) + xlim(12, 30) + ylim(0, 30)
+
+ggplot(df.std %>% filter(run_id == "0BSpYthIwrL2xhanhqAg"), aes(x = trial_num_total, theta_std_err, group = run_id)) +
+  geom_line(alpha = 0.2) + xlim(12, 80) + ylim(0, 30)
+
+ggplot(df.std , aes(x = trial_num_total, theta_estimate, group = run_id)) +
+  geom_line(alpha = 0.2) + xlim(12, 80) 
+
+```
+
+```{r}
+df.30 <- df.student.data.k.2.clean %>% 
+  filter(trial_num_total == 30) %>% 
+  select(run_id, theta_estimate, theta_std_err)
+
+df.e <- df.student.data.k.2.clean %>% 
+  filter(trial_num_total <= 30) %>% 
+  group_by(run_id) %>% 
+  summarise(
+    acc_20 = mean(correct, na.rm = TRUE),
+    rt_20  = median(rt, na.rm = TRUE)
+  ) %>% 
+  left_join(df.thetas, by = "run_id") %>% 
+  mutate(prob_stop = ifelse(acc_20 < 0.65, 1, 0)) %>% 
+  left_join(df.30) %>% 
+  filter(rt_20 < 2000)
+
+ggplot(df.e ,
+       aes(x = trueTheta,
+           y = prob_stop, color = theta_std_err)) + geom_smooth() + xlim(-6, 6) + geom_point(alpha = 0.05)
+
+ggplot(df.e ,
+       aes(x = trueSE,
+           y = theta_std_err, color = rt_20)) + geom_smooth()  + geom_point(alpha = 0.3) + ylim(0, 6) + coord_equal() + scale_color_viridis_c()
+```
+```{r}
+ggplot(df.30,
+       aes(x = theta_estimate,
+           y = theta_std_err)) +
+  geom_point() + ylim(0, 5)
+```
+
+TODO: get confusion matrix
+
+```{r}
+num_trials <- seq(20, 40, by = 5 )
+
+
+df.e <- df.student.data.k.2.clean %>% 
+  filter(trial_num_total <= num_trials, trial_num_total > 10) %>% 
+  group_by(run_id) %>% 
+  summarise(acc_20 = mean(correct), .groups = "drop") %>% 
+  left_join(df.thetas, by = "run_id")
+
+acc_thresh <- seq(0.5, 0.70, by = 0.05)
+
+num_trials <- seq(20, 40, by = 5)
+
+conditions <- expand_grid(
+  acc_thresh = acc_thresh,
+  num_trials = num_trials
+)
+
+results <- df.e %>%
+  crossing(conditions) %>%
+  mutate(
+    prob_stop = as.numeric(acc_20 < acc_thresh),
+    true_low = as.numeric(theta_estimate < -5)
+  ) %>%
+  group_by(acc_thresh,num_trials) %>%
+  summarise(
+    TP = sum(prob_stop & true_low),
+    FP = sum(prob_stop & !true_low),
+    FN = sum(!prob_stop & true_low),
+    TN = sum(!prob_stop & !true_low),
+
+    precision = TP / (TP + FP),
+    recall = TP / (TP + FN),
+    f1 = 2 * precision * recall / (precision + recall),
+    accuracy = (TP + TN) / (TP + FP + FN + TN),
+
+    # AUC computed for this threshold combination
+    auc = as.numeric(auc(roc(true_low, prob_stop, quiet = TRUE))),
+
+    .groups = "drop"
+  )
+
+ggplot(results,
+       aes(x = theta_thresh,
+           y = acc_thresh,
+           fill = f1)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "F1 score") +
+  theme_minimal() +
+  labs(
+    x = "Theta threshold",
+    y = "Accuracy threshold"
+  ) 
+```
+
+```{r}
+library(tidyverse)
+library(pROC)
+
+#---------------------------------------
+# 1. Condition grid
+#---------------------------------------
+
+theta_thresh <- seq(-6, -5, by = 0.02)
+num_trials <- seq(30, 50, by = 2)
+
+conditions <- expand_grid(
+  theta_thresh = theta_thresh,
+  num_trials = num_trials
+)
+
+#---------------------------------------
+# 2. Precompute cumulative accuracy
+#---------------------------------------
+
+df.acc <- df.student.data.k.2.clean %>%
+  filter(trial_num_total > 10) 
+
+#---------------------------------------
+# 3. Compute accuracy up to each trial cutoff
+#---------------------------------------
+
+# df.e <- df.acc %>%
+#   crossing(num_trials) %>%
+#   filter(trial_num_total <= num_trials) %>%
+#   group_by(run_id, num_trials) %>%
+#   summarise(acc_k = mean(correct), .groups = "drop") %>%
+#   left_join(df.thetas, by = "run_id") %>% 
+#   left_join(df.acc)
+
+df.e <- df.acc %>%
+  crossing(num_trials) %>%
+  filter(trial_num_total == num_trials) %>%
+  left_join(df.thetas, by = "run_id")
+
+#---------------------------------------
+# 4. Evaluate stopping rules
+#---------------------------------------
+
+# results <- df.e %>%
+#   crossing(theta_thresh) %>%
+#   mutate(
+#     prob_stop = as.numeric(theta_estimate <= theta_thresh),
+#     true_low = as.numeric(trueTheta < -5.5)
+#   ) %>%
+#   group_by(num_trials, theta_thresh) %>%
+#   summarise(
+#     TP = sum(prob_stop & true_low),
+#     FP = sum(prob_stop & !true_low),
+#     FN = sum(!prob_stop & true_low),
+#     TN = sum(!prob_stop & !true_low),
+# 
+#     precision = TP / (TP + FP),
+#     recall = TP / (TP + FN),
+#     f1 = 2 * precision * recall / (precision + recall),
+#     accuracy = (TP + TN) / (TP + FP + FN + TN),
+# 
+# 
+#     .groups = "drop"
+#   )
+
+library(dplyr)
+library(slider)
+
+results <- df.e %>%
+  crossing(theta_thresh) %>%
+  arrange(run_id, trial_num_total) %>%  # ensure correct order
+  group_by(run_id, num_trials, theta_thresh) %>%
+  mutate(
+    # rolling check: are ALL last 5 theta_estimates <= threshold?
+    last5_below = slide_lgl(
+      theta_estimate,
+      ~ all(.x <= theta_thresh),
+      .before = 4,   # include current + 4 previous = 5 trials
+      .complete = TRUE
+    ),
+    
+    prob_stop = as.numeric(last5_below),
+    true_low = as.numeric(trueTheta < -5.5)
+  ) %>%
+  filter(trial_num_total == num_trials) %>%  # evaluate at stopping point
+  group_by(num_trials, theta_thresh) %>%
+  summarise(
+    TP = sum(prob_stop & true_low),
+    FP = sum(prob_stop & !true_low),
+    FN = sum(!prob_stop & true_low),
+    TN = sum(!prob_stop & !true_low),
+
+    precision = TP / (TP + FP),
+    recall = TP / (TP + FN),
+    f1 = 2 * precision * recall / (precision + recall),
+    accuracy = (TP + TN) / (TP + FP + FN + TN),
+
+    .groups = "drop"
+  )
+
+ggplot(results,
+       aes(x = num_trials,
+           y = theta_thresh,
+           fill = precision)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "precision") +
+  theme_minimal(base_size = 13) +
+  labs(
+    x = "Number of trials used",
+    y = "Accuracy threshold"
+  )
+
+ggplot(results,
+       aes(x = num_trials,
+           y = theta_thresh,
+           fill = accuracy)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "accuracy") +
+  theme_minimal(base_size = 13) +
+  labs(
+    x = "Number of trials used",
+    y = "Accuracy threshold"
+  )
+```
+```{r}
+df.cm <- df.e %>%
+  filter(trial_num_total > 30, trial_num_total <= 50) %>% 
+  group_by(run_id, trueTheta) %>% 
+  summarise(max_theta = max(theta_estimate),  .groups = "drop") %>% 
+  mutate(
+    early_stop = ifelse(max_theta <= -5.9, 1, 0),
+    true_low = as.numeric(trueTheta <= -6)
+  )
+
+df.cm %>%
+  summarise(
+    TP = sum(early_stop == 1 & true_low == 1),
+    FP = sum(early_stop == 1 & true_low == 0),
+    FN = sum(early_stop == 0 & true_low == 1),
+    TN = sum(early_stop == 0 & true_low == 0)
+  ) %>%
+  mutate(
+    precision = TP / (TP + FP),
+    recall = TP / (TP + FN),
+    f1 = 2 * precision * recall / (precision + recall),
+    accuracy = (TP + TN) / (TP + FP + FN + TN)
+  )
+  
+```
+
+```{r}
+
+df.e <- df.acc %>%
+  group_by(run_id) %>%
+  # Check if the current AND previous 4 trials are all below the threshold
+  # We use slide_lgl to see if the condition 'theta_estimate <= theta_thresh' 
+  # holds true for the entire window of 5.
+  crossing(theta_thresh) %>%
+  mutate(
+    # This creates a logical vector: TRUE if the last 5 trials met the criteria
+    met_stop_condition = slide_lgl(
+      theta_estimate, 
+      ~all(.x <= theta_thresh), 
+      .before = 4, 
+      .complete = TRUE
+    )
+  ) %>%
+  ungroup() %>%
+  # Now filter to the specific num_trials you want to evaluate
+  crossing(num_trials) %>%
+  filter(trial_num_total == num_trials) %>%
+  left_join(df.thetas, by = "run_id")
+
+#---------------------------------------
+# 4. Evaluate stopping rules
+#---------------------------------------
+
+results <- df.e %>%
+  mutate(
+    # Use the rolling condition instead of the single point check
+    prob_stop = as.numeric(met_stop_condition),
+    true_low  = as.numeric(trueTheta <=-6)
+  ) %>%
+  # Remove NAs (the first 4 trials of any run cannot have a "last 5" window)
+  filter(!is.na(prob_stop)) %>%
+  group_by(num_trials, theta_thresh) %>%
+  summarise(
+    TP = sum(prob_stop & true_low, na.rm = TRUE),
+    FP = sum(prob_stop & !true_low, na.rm = TRUE),
+    FN = sum(!prob_stop & true_low, na.rm = TRUE),
+    TN = sum(!prob_stop & !true_low, na.rm = TRUE),
+
+    precision = TP / (TP + FP),
+    recall    = TP / (TP + FN),
+    f1        = 2 * precision * recall / (precision + recall),
+    accuracy  = (TP + TN) / (TP + FP + FN + TN),
+
+    .groups = "drop"
+  )
+```
+```{r}
+results 
+```
+
+```{r}
+library(tidyverse)
+library(pROC)
+
+#---------------------------------------
+# 1. Condition grid
+#---------------------------------------
+
+acc_thresh <- seq(-6, -3, by = 0.2)
+num_trials <- seq(30, 40, by = 2)
+
+conditions <- expand_grid(
+  acc_thresh = acc_thresh,
+  num_trials = num_trials
+)
+
+#---------------------------------------
+# 2. Precompute cumulative accuracy
+#---------------------------------------
+
+df.acc <- df.student.data.k.2.clean %>%
+  filter(trial_num_total > 10) 
+
+#---------------------------------------
+# 3. Compute accuracy up to each trial cutoff
+#---------------------------------------
+
+df.e <- df.acc %>%
+  crossing(num_trials) %>%
+  filter(trial_num_total == num_trials) %>%
+  left_join(df.thetas, by = "run_id")
+
+```
+```{r}
+#---------------------------------------
+# 4. Evaluate stopping rules
+#---------------------------------------
+
+results <- df.e %>%
+  crossing(acc_thresh) %>%
+  mutate(
+    prob_stop = as.numeric(theta_estimate < acc_thresh),
+    true_low = as.numeric(trueTheta < -5)
+  ) %>%
+  group_by(num_trials, acc_thresh) %>%
+  summarise(
+    TP = sum(prob_stop & true_low),
+    FP = sum(prob_stop & !true_low),
+    FN = sum(!prob_stop & true_low),
+    TN = sum(!prob_stop & !true_low),
+
+    precision = TP / (TP + FP),
+    recall = TP / (TP + FN),
+    f1 = 2 * precision * recall / (precision + recall),
+    accuracy = (TP + TN) / (TP + FP + FN + TN),
+    auc = as.numeric(auc(roc(true_low, theta_estimate, quiet = TRUE))),
+    .groups = "drop"
+  )
+
+ggplot(results,
+       aes(x = num_trials,
+           y = acc_thresh,
+           fill = precision)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "f1") +
+  theme_minimal(base_size = 13) +
+  labs(
+    x = "Number of trials used",
+    y = "Accuracy threshold"
+  )
+
+ggplot(results,
+       aes(x = num_trials,
+           y = acc_thresh,
+           fill = auc)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "f1") +
+  theme_minimal(base_size = 13) +
+  labs(
+    x = "Number of trials used",
+    y = "Accuracy threshold"
+  )
+```
+
+```{r}
+results
+```
+
