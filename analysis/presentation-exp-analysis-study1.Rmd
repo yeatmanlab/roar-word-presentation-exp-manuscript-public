@@ -43,6 +43,7 @@ library("lme4")        # for linear mixed effects models
 library("performance") # for assessing model performance
 library("see")         # for assessing model performance
 library(imv)
+library(forcats)
 ```
 
 ## Settings
@@ -58,12 +59,12 @@ options(dplyr.summarise.inform = F)
 
 # Data
 ```{r}
-df.data <- read_csv("data/study1_combined_raw_trials.csv") 
+df.data <- read_csv("data/study1_combined_raw_trials_update.csv") 
 df.items <- read_csv("corpus/item_bank_v5_520.csv")
 ```
 ```{r}
 df.data.pt <- read_csv("data/study1_brazil_raw_data_new.csv") 
-`
+```
 
 ```{r}
 timeConvert <- c(
@@ -77,64 +78,42 @@ timeConvert <- c(
 
 # Study 1 English
 ## Descriptives
-1. We have recruited N = 664 participants from three sources: 
+1. We have recruited N = 661 participants from three sources using keyboard: 
+
 ```{r}
 df.data %>% 
-  filter(response_source == "keyboard") %>% 
-  filter(trial_num_total == 1) %>% 
-  filter(!is.na(assessment_pid)) %>% 
-  group_by(age_group, assessment_pid) %>% 
+  group_by(age_group, run_id) %>% 
   tally() %>% 
   group_by(age_group) %>% 
   tally()
 ```
 
-2. We have 635 completed runs:
-```{r}
-df.data %>% 
-  filter(trial_num_total == 1, completed == TRUE) %>% 
-  filter(response_source == "keyboard") %>% 
-  filter(!is.na(assessment_pid)) %>% 
-  group_by(age_group, assessment_pid) %>% 
-  tally() %>% 
-  group_by(age_group) %>% 
-  tally()
-
-df.data %>% 
-  filter(trial_num_total == 1, completed == TRUE) %>% 
-  filter(!is.na(assessment_pid)) %>% 
-  group_by(response_source, assessment_pid) %>% 
-  tally() %>% 
-  group_by(response_source) %>% 
-  tally()
-```
-
-3. Exclusion: 
-a. We exclude N = 18 rapid guessing participants based on the operational flag. 
+2. Exclusion: 
+a. We exclude N = 19 rapid guessing participants based on the operational flag. 
 
 ```{r}
 df.rapid.guessing <- df.data %>% 
   filter(response_source == "keyboard") %>% 
-  filter(completed == TRUE, !is.na(assessment_pid)) %>% 
   group_by(age_group, run_id) %>% 
   summarise(medianRT = median(rt), acc = mean(correct)) %>% 
   filter(medianRT < 450, acc < 0.65) 
 
+length(df.rapid.guessing$run_id)
 ```
 
-b. 12 people who spent more than 60min in testing
+b. 12 people who spent more than 60 min in testing
 ```{r}
 df.summary.long.time <- df.data %>% 
-   filter(response_source == "keyboard") %>% 
-  filter(completed == TRUE, !is.na(assessment_pid), assessment_stage == "test_response") %>% 
   group_by(age_group, run_id) %>% 
   summarise(total_time_min = max(time_elapsed)/60000) %>% 
   filter(total_time_min > 60)
+
+length(df.summary.long.time$run_id)
 ```
 
 ```{r}
 df.data.clean.raw <- df.data %>% 
-  filter(completed == TRUE, !is.na(assessment_pid), assessment_stage == "test_response", response_source == "keyboard", stimulus_presentation_time != 'T4') %>% 
+  filter(stimulus_presentation_time != 'T4') %>% 
   filter(!run_id %in% df.rapid.guessing$run_id, !run_id %in% df.summary.long.time$run_id) %>% 
   mutate(user_grade = as.numeric(user_grade)) %>% 
   mutate(age = ifelse(is.na(age_in_months), NA, round(age_in_months/12))) %>% 
@@ -145,13 +124,15 @@ df.data.clean.raw <- df.data %>%
       user_grade >= 6 & user_grade < 9 ~ "Middle School",
       user_grade >= 9 & user_grade < 13 ~ "High School",
       TRUE ~ "College"  # default catch-all
-    )) %>% 
-  filter(response_source == "keyboard") 
-
-
+    )) 
 ```
 
-valid response
+In total of 540 participants.
+```{r}
+length(unique(df.data.clean.raw$run_id))
+```
+
+c. remove invalid response
 ```{r}
 length(df.data.clean.raw$run_id)
 df.data.clean.raw %>% 
@@ -165,10 +146,19 @@ df.data.clean <- df.data.clean.raw %>%
 df.data.clean.raw %>% 
   mutate(valid_response = ifelse(rt >= 200 & rt <= 5000, 1, 0)) %>% 
   group_by(stimulus_presentation_time) %>% 
-  summarise(1-mean(valid_response))
+  summarise(round(1-mean(valid_response),3))
 ```
 
-4. Grade Distribution 
+```{r}
+df.data.clean.raw %>% 
+  group_by(word) %>% 
+  tally() %>% 
+  arrange(n)
+```
+
+
+
+3. Grade Distribution 
 ```{r}
 df.summary <- df.data.clean %>% 
   group_by(run_id,user_grade) %>% 
@@ -177,7 +167,11 @@ df.summary <- df.data.clean %>%
 g.1 <-  ggplot(df.summary, aes(x = user_grade)) +
   geom_histogram(binwidth = 1, color = "black", fill = "grey", position = "identity", alpha = 1) + 
   scale_x_continuous(breaks = 1:13, labels = 1:13) + labs(title = "English ROAR-Word") + labs(x = "Grade level", y = "Count")
+
 g.1
+```
+```{r}
+df.summary
 ```
 
 
@@ -190,9 +184,7 @@ df.data.pt %>%
   group_by(user_grade) %>% 
   tally() 
 
-df.data.pt %>% 
-  group_by(run_id) %>% 
-  tally()
+length(unique(df.data.pt$run_id))
 ```
 2. Exclusion: 
 a. We exclude N = 112 rapid guessing participants based on the operational flag. 
@@ -207,7 +199,7 @@ df.rapid.guessing.pt <- df.data.pt %>%
 length(df.rapid.guessing.pt$run_id)
 ```
 
-b. 86 people who spent more than 60min in testing
+b. 86 people who spent more than 60 min in testing
 ```{r}
 df.summary.long.time.pt <- df.data.pt %>% 
   filter(assessment_stage == "test_response") %>% 
@@ -217,19 +209,26 @@ df.summary.long.time.pt <- df.data.pt %>%
 
 length(df.summary.long.time.pt$run_id)
 ```
+```{r}
+df.summary.long.time.pt %>% 
+  filter(run_id %in% df.rapid.guessing.pt$run_id)
+```
 
+resulting 2382 participants
 ```{r}
 df.data.clean.pt.raw <- df.data.pt %>% 
   filter(assessment_stage == "test_response") %>% 
   filter(!run_id %in% df.rapid.guessing.pt$run_id, !run_id %in% df.summary.long.time.pt$run_id) %>% 
   mutate(user_grade = as.numeric(user_grade)) 
+length(unique(df.data.clean.pt.raw$run_id))
+```
 
+c. remove invalid responses
+```{r}
 df.pt.responses <- df.data.clean.pt.raw %>% 
   filter(rt < 30000) 
 
 mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3
-
-length(df.data.clean.pt$trial_id)
 
 df.data.clean.pt.raw %>% 
   mutate(valid_response = ifelse(rt >= 200 & rt <= (mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3), 1, 0)) %>% 
@@ -239,7 +238,7 @@ df.data.clean.pt.raw %>%
 df.data.clean.pt.raw %>% 
   mutate(valid_response = ifelse(rt >= 200 & rt <= (mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3), 1, 0)) %>% 
   group_by(stimulusPresentationTime) %>% 
-  summarise(1-mean(valid_response), n = n())
+  summarise(round(1-mean(valid_response),3), n = n())
 
 df.data.clean.pt <- df.data.clean.pt.raw %>% 
   filter(rt >= 200, rt <= (mean(df.pt.responses$rt) + sd(df.pt.responses$rt) * 3)) %>% 
@@ -266,6 +265,7 @@ length(df.summary.pt$run_id)
 g.1.pt <-  ggplot(df.summary.pt, aes(x = user_grade)) +
   geom_histogram(binwidth = 1, color = "black", fill = "grey", position = "identity", alpha = 1) + 
   scale_x_continuous(breaks = 1:13, labels = 1:13) + labs(title = "Portuguese ROAR-Palavra") + labs(x = "Grade level", y = "Count")
+
 g.1.pt
 ```
 ```{r}
@@ -302,35 +302,6 @@ g.1bc.grade
 ```
 
 ```{r}
-# df.summary.block <- df.data.clean %>% 
-#   mutate(age_group_2 = ifelse(age_group == "adult", "adult", "development")) %>% 
-#   group_by(trial_num_total, stimulus_presentation_time, age_category) %>% 
-#   summarise(n = n(), acc = mean(correct), rt = median(rt)) %>% 
-#   filter(trial_num_total < 206)
-# 
-# ggplot(df.summary.block, aes(x = trial_num_total, y = acc, color = stimulus_presentation_time)) +
-#   geom_smooth(size = 0.8) +
-#   geom_point(size = 0.4, alpha = 0.1) +
-#   facet_wrap(~age_category) 
-```
-
- 
-
-```{r}
-# hi <- df.data.clean %>% 
-#   #filter(stimulus_presentation_time == "T1") %>% 
-#   group_by(word, realpseudo, stimulus_presentation_time) %>% 
-#   summarise(acc = mean(correct), rt = median(log(rt)), n = n()) %>% 
-#   filter(n > 20) %>% 
-#   arrange(-acc) 
-# 
-# ggplot(hi, aes(x = acc, y = rt, group = realpseudo, color = realpseudo)) +
-#   geom_smooth(size = 0.8) +
-#   geom_point(size = 0.4, alpha = 0.1) +
-#   facet_wrap(~stimulus_presentation_time) + stat_cor()
-```
-
-```{r}
 df.subj.summary <- df.data.clean %>% 
   #filter(stimulus_presentation_time != 'T4') %>% 
   mutate(
@@ -346,11 +317,14 @@ df.subj.summary <- df.data.clean %>%
 
 ```
 
+a. response accuracy
+
 ```{r}
 lm.1 <- lm(acc ~ stimulus_presentation_time + user_grade, df.subj.summary)
 
 summary(lm.1)
 ```
+b. response time
 
 ```{r}
 lm.rt <- lm(rt ~ user_grade + stimulus_presentation_time , df.subj.summary)
@@ -359,6 +333,30 @@ summary(lm.rt)
 lm.rt.log <- lm(log_rt ~ user_grade + stimulus_presentation_time , df.subj.summary)
 summary(lm.rt.log)
 ```
+```{r}
+b_T1 <- lm.rt.log$coefficients[[3]]
+b_T5 <- lm.rt.log$coefficients[[5]]
+
+b_grade <- lm.rt.log$coefficients[[2]]
+
+# Convert log-scale coefficients to percentage change
+
+pct_T1 <- (exp(b_T1) - 1) * 100
+pct_T1
+
+pct_T5 <- (exp(b_T5) - 1) * 100
+pct_T5
+
+pct_grade <- (exp(b_grade) - 1) * 100
+pct_grade
+
+# Equivalent developmental change
+
+years_equivalent <- abs((b_T5-b_T1) / b_grade)
+
+years_equivalent
+```
+
 
 ## Brazil 
 ```{r}
@@ -386,12 +384,17 @@ df.subj.summary.pt <- df.data.clean.pt %>%
 
 ```
 
+a. response accuracy
 
 ```{r}
 lm.pt.1 <- lm(acc ~ user_grade + stimulus_presentation_time, df.subj.summary.pt)
 
 summary(lm.pt.1)
 
+```
+
+b. response time
+```{r}
 lm.pt.1.rt <- lm(rt ~ user_grade + stimulus_presentation_time, df.subj.summary.pt)
 
 summary(lm.pt.1.rt)
@@ -400,11 +403,31 @@ lm.pt.1.rt.log <- lm(log_rt ~ user_grade + stimulus_presentation_time, df.subj.s
 
 summary(lm.pt.1.rt.log)
 ```
+```{r}
+b_infinite <- lm.pt.1.rt.log$coefficients[[3]]
+
+b_grade <- lm.pt.1.rt.log$coefficients[[2]]
+
+# Convert log-scale coefficients to percentage change
+
+pct_infinite <- (exp(b_infinite) - 1) * 100
+
+pct_grade <- (exp(b_grade) - 1) * 100
+
+pct_infinite
+
+pct_grade
+
+# Equivalent developmental change
+
+years_equivalent <- abs(b_infinite / b_grade)
+
+years_equivalent
+```
 
 
 ## plot 
 ```{r}
-library(forcats)
 df.summary.grade <- df.data.clean %>% 
   filter(stimulus_presentation_time != 'T4') %>% 
   mutate( stimulus_presentation_time = case_when( stimulus_presentation_time == 'T1' ~ "80ms", 
@@ -600,8 +623,14 @@ df.items.exclude <- df.trials.clean.dev %>%
   group_by(stimulus_presentation_time, word) %>% 
   summarise(acc = mean(correct)) %>% 
   filter(acc == 1 | acc == 0)
+
 ```
 
+```{r}
+df.items.exclude %>% 
+  group_by(word) %>% 
+  tally()
+```
 
 ```{r}
 df.trials.combined <- df.trials.clean.dev %>% 
@@ -852,7 +881,6 @@ df.persons.model.slow <- as.data.frame(fscores(df.results.full.model$model, meth
 ```
 
 ```{r}
-plot
 
 df.plot <- data.frame(
   fast = df.persons.model.fast$F1,
@@ -878,16 +906,16 @@ df.trials.combined.full %>%
 
 ```{r}
 Q_2d <- cbind(
-  rep(1, 1068),                # column 1: all 1s
-  rep(c(0, 1), length.out = 1068)  # column 2: repeating 0,1,0,1,...
+  rep(1, 1066),                # column 1: all 1s
+  rep(c(0, 1), length.out = 1066)  # column 2: repeating 0,1,0,1,...
 )
 ```
 
 ```{r}
 funct.get.params.full.2d <- function(df){
   Q_2d <- cbind(
-  rep(1, 1068),                # column 1: all 1s
-  rep(c(0, 1), length.out = 1068)  # column 2: repeating 0,1,0,1,...
+  rep(1, 1066),                # column 1: all 1s
+  rep(c(0, 1), length.out = 1066)  # column 2: repeating 0,1,0,1,...
   )
   
   mirt_2d <- mirt.model(Q_2d)
@@ -935,7 +963,8 @@ lrt$p
 ```
 
 ```{r}
-df.2d.params <- as.tibble(coef(mirt_mod_2d, simplify = TRUE)$items) %>% 
+mirt_mod_2d <- df.results.full.model.2d$model
+df.2d.params <- as_tibble(coef(mirt_mod_2d, simplify = TRUE)$items) %>% 
   add_column(word2 = names(df.resp.full[-1])) %>% 
   left_join(df.trials.combined.full %>% 
   select(word, realpseudo, word2, fast_presentation) %>% 
